@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>共界</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="grain"></div>
+  <div id="app" class="app-shell">
+    <aside class="left-rail">
+      <button class="brand" data-action="home" aria-label="回到世界">
+        <span class="brand-mark"><i></i><i></i><i></i></span>
+        <span>共界</span>
+      </button>
+      <label id="world-switch" class="world-switch">
+        <span><small>当前世界</small><strong id="world-name-side">—</strong></span>
+        <span class="chevron">⌄</span>
+        <select id="world-select" aria-label="切换世界"></select>
+      </label>
+      <nav class="main-nav">
+        <button class="nav-button active" data-view="home"><span>⌂</span>场域</button>
+        <button class="nav-button" data-view="timeline"><span>⌁</span>正史</button>
+      </nav>
+      <div class="rail-label"><span>人物</span><b id="character-count">0</b></div>
+      <div id="character-list" class="character-list"></div>
+      <div class="rail-bottom">
+        <div id="provider-state" class="provider-state"><i></i><span>未连接</span></div>
+        <button class="icon-button" data-action="settings" aria-label="模型设置">⚙</button>
+      </div>
+    </aside>
+
+    <main class="main-stage">
+      <header class="stage-header">
+        <div>
+          <span id="stage-eyebrow" class="stage-eyebrow">共享世界</span>
+          <h1 id="stage-title">—</h1>
+        </div>
+        <div class="header-actions">
+          <span id="world-clock" class="world-clock">—</span>
+          <button class="soft-button" data-action="settings">连接模型</button>
+        </div>
+      </header>
+
+      <section id="home-view" class="view active"></section>
+      <section id="timeline-view" class="view"></section>
+      <section id="chat-view" class="view chat-view"></section>
+    </main>
+
+    <aside id="inspector" class="inspector"></aside>
+  </div>
+
+  <dialog id="provider-dialog" class="dialog">
+    <form id="provider-form" method="dialog">
+      <div class="dialog-head">
+        <div><span class="stage-eyebrow">模型连接</span><h2>让世界开口</h2></div>
+        <button type="button" class="close-button" data-action="close-settings">×</button>
+      </div>
+      <label>协议
+        <select name="protocol" id="provider-protocol">
+          <option value="openai-compatible">OpenAI Compatible</option>
+          <option value="anthropic-messages">Anthropic Messages</option>
+        </select>
+      </label>
+      <div class="form-row">
+        <label>Base URL<input name="base_url" required spellcheck="false"></label>
+        <label>Path<input name="path" required spellcheck="false"></label>
+      </div>
+      <label>模型<input name="model" required spellcheck="false" placeholder="模型名称"></label>
+      <label>API Key<input name="api_key" type="password" autocomplete="off" spellcheck="false" placeholder="留空则保持现有 Key"></label>
+      <div class="form-row compact">
+        <label>最长回复<input name="max_tokens" type="number" min="256" max="200000"></label>
+        <label>温度<input name="temperature" type="number" min="0" max="2" step="0.05"></label>
+      </div>
+      <div id="provider-feedback" class="form-feedback"></div>
+      <div class="dialog-actions">
+        <button type="button" class="soft-button" id="test-provider">测试连接</button>
+        <button type="submit" class="primary-button">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="world-dialog" class="dialog editor-dialog">
+    <form id="world-form" method="dialog">
+      <div class="dialog-head">
+        <div><span class="stage-eyebrow">WORLD</span><h2 id="world-dialog-title">世界底稿</h2></div>
+        <button type="button" class="close-button" data-action="close-world-editor">×</button>
+      </div>
+      <label>名字<input name="name" required maxlength="60"></label>
+      <label>世界前提<textarea name="premise" rows="3"></textarea></label>
+      <label>气息<input name="atmosphere"></label>
+      <label>规则<textarea name="rules" rows="4"></textarea></label>
+      <label>此刻<input name="current_time"></label>
+      <section id="location-editor" class="editor-subsection">
+        <div class="subsection-head"><span>地点</span></div>
+        <div id="editor-location-list" class="editor-location-list"></div>
+        <div class="new-location">
+          <input id="new-location-name" placeholder="新地点">
+          <input id="new-location-mood" placeholder="气息">
+          <textarea id="new-location-description" rows="2" placeholder="它是什么样的地方"></textarea>
+          <button type="button" class="soft-button" id="add-location">加入地点</button>
+        </div>
+      </section>
+      <div class="dialog-actions"><button type="submit" class="primary-button">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="character-dialog" class="dialog editor-dialog">
+    <form id="character-form" method="dialog">
+      <div class="dialog-head">
+        <div><span class="stage-eyebrow">CHARACTER</span><h2 id="character-dialog-title">人物底色</h2></div>
+        <button type="button" class="close-button" data-action="close-character-editor">×</button>
+      </div>
+      <div class="form-row compact"><label>名字<input name="name" required maxlength="60"></label><label>年龄<input name="age" type="number" min="18" max="999" required></label></div>
+      <div class="form-row compact"><label>身份<input name="role"></label><label>所在地点<select name="current_location_id"></select></label></div>
+      <label>一句底色<input name="tagline"></label>
+      <label>人格<textarea name="persona" rows="4"></textarea></label>
+      <label>说话方式<textarea name="speech_style" rows="3"></textarea></label>
+      <label>标志性行为<textarea name="signature_behaviors" rows="3" placeholder="一行一个"></textarea></label>
+      <label>失控方式<textarea name="loss_of_control" rows="3"></textarea></label>
+      <div class="desire-editor">
+        <label>掌控<input name="control" type="number" min="0" max="100"></label>
+        <label>投入<input name="devotion" type="number" min="0" max="100"></label>
+        <label>嫉妒<input name="jealousy" type="number" min="0" max="100"></label>
+        <label>冒险<input name="risk" type="number" min="0" max="100"></label>
+        <label>温柔<input name="tenderness" type="number" min="0" max="100"></label>
+      </div>
+      <label>颜色<input name="accent" type="color"></label>
+      <input name="pronouns" type="hidden" value="">
+      <div class="dialog-actions"><button type="submit" class="primary-button">保存</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
