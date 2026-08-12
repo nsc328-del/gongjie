@@ -19,3 +19,9 @@
 - API Key 独立保存在 `data/secrets.json`，不进入 SQLite 或 Git。
 
 Provider 层沿用了 Aru `codex/full-shell-material-recipes` 分支的核心边界：provider-neutral request context、协议 adapter、SSE canonical event、cumulative stream snapshot 与 normalized error。
+
+## 开发入口
+
+- 产品语义、模块边界和分支职责以 [`docs/CONCEPT.md`](docs/CONCEPT.md) 为准。
+- 后端入口是 `gongjie.app:app`，前端仍由 `static/` 提供。
+- 关键验证运行 `.venv/bin/python -m unittest discover -s tests -v`。

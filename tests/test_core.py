@@ -4,9 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from db import Store
-from engine import parse_patch, roleplay_system
-from providers import OpenAICompatibleAdapter, ProviderClient, ReplySnapshot
+from gongjie.ai.providers import OpenAICompatibleAdapter, ProviderClient, ReplySnapshot
+from gongjie.cognition.compiler import roleplay_system
+from gongjie.scenes.adjudication import parse_patch
+from gongjie.storage.store import Store
 
 
 class WorldContinuityTests(unittest.TestCase):
