@@ -22,7 +22,6 @@ async def stream_turn(
     provider_client: ProviderClient,
     profile_loader: Callable[[], dict[str, Any]],
     conversation_id: str,
-    branch_id: str | None,
     content: str,
     continuation: bool,
     is_disconnected: Callable[[], Awaitable[bool]],
@@ -31,19 +30,18 @@ async def stream_turn(
     accumulated = ""
     reasoning = ""
     try:
-        current = store.get_conversation(conversation_id, branch_id)
-        selected_branch_id = current["branch_id"]
+        store.get_conversation(conversation_id)
         clean_content = content.strip()
         if not continuation and not clean_content:
             raise ValueError("message_empty")
         if continuation and clean_content:
             raise ValueError("continuation_must_be_empty")
         if clean_content:
-            user_message = store.add_message(conversation_id, selected_branch_id, "user", clean_content)
+            user_message = store.add_message(conversation_id, "user", clean_content)
             yield packet("user", message=user_message)
-        assistant = store.add_message(conversation_id, selected_branch_id, "assistant", "", "streaming")
+        assistant = store.add_message(conversation_id, "assistant", "", "streaming")
         yield packet("assistant_start", message=assistant)
-        context = store.context_for_turn(conversation_id, selected_branch_id)
+        context = store.context_for_turn(conversation_id)
         profile = profile_loader()
         previous_content = ""
         final_snapshot = None
@@ -83,7 +81,7 @@ async def stream_turn(
         try:
             world_patch = await extract_patch(provider_client, context, accumulated, profile)
             patch_result = store.apply_world_patch(
-                conversation_id, selected_branch_id, assistant["id"], world_patch
+                conversation_id, assistant["id"], world_patch
             )
             yield packet("world_patch", patch=world_patch, result=patch_result)
         except Exception as patch_error:

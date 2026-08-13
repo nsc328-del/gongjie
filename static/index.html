@@ -8,20 +8,36 @@
 </head>
 <body>
   <div class="grain"></div>
-  <div id="app" class="app-shell">
-    <aside class="left-rail">
-      <button class="brand" data-action="home" aria-label="回到世界">
-        <span class="brand-mark"><i></i><i></i><i></i></span>
-        <span>共界</span>
+
+  <section id="library-screen" class="library-screen">
+    <header class="library-header">
+      <button class="brand" data-action="library" aria-label="共界世界书架">
+        <span class="brand-mark"><i></i><i></i><i></i></span><span>共界</span>
       </button>
-      <label id="world-switch" class="world-switch">
-        <span><small>当前世界</small><strong id="world-name-side">—</strong></span>
-        <span class="chevron">⌄</span>
-        <select id="world-select" aria-label="切换世界"></select>
-      </label>
+      <div class="library-actions">
+        <span id="library-provider-state" class="provider-state"><i></i><span>未连接</span></span>
+        <button class="soft-button" data-action="settings">模型设置</button>
+      </div>
+    </header>
+    <main class="library-main">
+      <div class="library-intro">
+        <span class="stage-eyebrow">WORLDS</span>
+        <h1>去往哪个世界</h1>
+      </div>
+      <div id="world-library-grid" class="world-library-grid"></div>
+    </main>
+  </section>
+
+  <div id="world-shell" class="app-shell hidden">
+    <aside class="left-rail">
+      <button class="brand" data-action="library" aria-label="返回世界书架">
+        <span class="brand-mark"><i></i><i></i><i></i></span><span>共界</span>
+      </button>
+      <button class="world-return" data-action="world-home">
+        <small>当前世界</small><strong id="world-name-side">—</strong><span>回到全景</span>
+      </button>
       <nav class="main-nav">
-        <button class="nav-button active" data-view="home"><span>⌂</span>场域</button>
-        <button class="nav-button" data-view="timeline"><span>⌁</span>正史</button>
+        <button class="nav-button active" data-action="world-home"><span>◌</span>世界全景</button>
       </nav>
       <div class="rail-label"><span>人物</span><b id="character-count">0</b></div>
       <div id="character-list" class="character-list"></div>
@@ -33,19 +49,20 @@
 
     <main class="main-stage">
       <header class="stage-header">
-        <div>
+        <button id="mobile-back" class="mobile-back" data-action="world-home" aria-label="返回世界">‹</button>
+        <div class="stage-heading">
           <span id="stage-eyebrow" class="stage-eyebrow">共享世界</span>
           <h1 id="stage-title">—</h1>
         </div>
         <div class="header-actions">
           <span id="world-clock" class="world-clock">—</span>
-          <button class="soft-button" data-action="settings">连接模型</button>
+          <button class="soft-button" data-action="library">世界书架</button>
         </div>
       </header>
 
-      <section id="home-view" class="view active"></section>
-      <section id="timeline-view" class="view"></section>
+      <section id="world-view" class="view active"></section>
       <section id="chat-view" class="view chat-view"></section>
+      <section id="room-view" class="view chat-view"></section>
     </main>
 
     <aside id="inspector" class="inspector"></aside>
@@ -84,11 +101,21 @@
   <dialog id="world-dialog" class="dialog editor-dialog">
     <form id="world-form" method="dialog">
       <div class="dialog-head">
-        <div><span class="stage-eyebrow">WORLD</span><h2 id="world-dialog-title">世界底稿</h2></div>
+        <div><span class="stage-eyebrow">WORLD BOOK</span><h2 id="world-dialog-title">世界底稿</h2></div>
         <button type="button" class="close-button" data-action="close-world-editor">×</button>
       </div>
-      <label>名字<input name="name" required maxlength="60"></label>
+      <section id="world-template-picker" class="template-picker">
+        <button type="button" class="template-option active" data-template="">
+          <strong>空白世界</strong><span>从一页世界书开始</span>
+        </button>
+        <button type="button" class="template-option" data-template="velvet_harbor">
+          <strong>绯港序章</strong><span>三名角色与一座雾港</span>
+        </button>
+      </section>
+      <input name="template_id" type="hidden" value="">
+      <label>这个世界的名字<input name="name" required maxlength="60"></label>
       <label>世界前提<textarea name="premise" rows="3"></textarea></label>
+      <label>开场此刻<textarea name="opening_narration" rows="4"></textarea></label>
       <label>气息<input name="atmosphere"></label>
       <label>规则<textarea name="rules" rows="4"></textarea></label>
       <label>此刻<input name="current_time"></label>
@@ -102,7 +129,7 @@
           <button type="button" class="soft-button" id="add-location">加入地点</button>
         </div>
       </section>
-      <div class="dialog-actions"><button type="submit" class="primary-button">保存</button></div>
+      <div class="dialog-actions"><button type="submit" class="primary-button">保存世界</button></div>
     </form>
   </dialog>
 
@@ -115,6 +142,7 @@
       <div class="form-row compact"><label>名字<input name="name" required maxlength="60"></label><label>年龄<input name="age" type="number" min="18" max="999" required></label></div>
       <div class="form-row compact"><label>身份<input name="role"></label><label>所在地点<select name="current_location_id"></select></label></div>
       <label>一句底色<input name="tagline"></label>
+      <label>开场牵引<textarea name="opening_hook" rows="3"></textarea></label>
       <label>人格<textarea name="persona" rows="4"></textarea></label>
       <label>说话方式<textarea name="speech_style" rows="3"></textarea></label>
       <label>标志性行为<textarea name="signature_behaviors" rows="3" placeholder="一行一个"></textarea></label>
@@ -128,7 +156,20 @@
       </div>
       <label>颜色<input name="accent" type="color"></label>
       <input name="pronouns" type="hidden" value="">
-      <div class="dialog-actions"><button type="submit" class="primary-button">保存</button></div>
+      <div class="dialog-actions"><button type="submit" class="primary-button">保存人物</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="room-dialog" class="dialog editor-dialog">
+    <form id="room-form" method="dialog">
+      <div class="dialog-head">
+        <div><span class="stage-eyebrow">SAME SCENE</span><h2>开一个同场房间</h2></div>
+        <button type="button" class="close-button" data-action="close-room-dialog">×</button>
+      </div>
+      <label>房间名字<input name="name" maxlength="60" placeholder="例如：三姐妹夜谈"></label>
+      <label>场景地点<select name="location_id"><option value="">未定</option></select></label>
+      <label>拉谁入局（可多选）<div id="room-character-picker" class="room-character-picker"></div></label>
+      <div class="dialog-actions"><button type="submit" class="primary-button">开群</button></div>
     </form>
   </dialog>
 

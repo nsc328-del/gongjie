@@ -8,14 +8,7 @@ class ConversationCreate(BaseModel):
 
 class TurnInput(BaseModel):
     content: str = ""
-    branch_id: str | None = None
     continuation: bool = False
-
-
-class BranchCreate(BaseModel):
-    parent_branch_id: str
-    from_message_id: str
-    title: str | None = None
 
 
 class ProviderInput(BaseModel):
@@ -35,7 +28,9 @@ class WorldInput(BaseModel):
     premise: str = ""
     atmosphere: str = ""
     rules: str = ""
+    opening_narration: str = ""
     current_time: str = ""
+    template_id: str | None = None
 
 
 class LocationInput(BaseModel):
@@ -50,6 +45,7 @@ class CharacterInput(BaseModel):
     pronouns: str = ""
     role: str = ""
     tagline: str = ""
+    opening_hook: str = ""
     persona: str = ""
     speech_style: str = ""
     desire_profile: dict[str, int] = Field(default_factory=dict)
@@ -57,3 +53,9 @@ class CharacterInput(BaseModel):
     loss_of_control: str = ""
     current_location_id: str | None = None
     accent: str = "#bc5d45"
+
+
+class RoomInput(BaseModel):
+    name: str = Field(default="同场", max_length=60)
+    location_id: str | None = None
+    character_ids: list[str] = Field(default_factory=list)

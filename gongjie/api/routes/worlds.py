@@ -4,7 +4,8 @@ from fastapi import APIRouter
 
 from gongjie.api.errors import api_error
 from gongjie.api.schemas import CharacterInput, LocationInput, WorldInput
-from gongjie.runtime import store
+from gongjie.cognition.sync import sync_world_cognition
+from gongjie.runtime import active_profile, provider_client, store
 
 
 router = APIRouter(prefix="/api")
@@ -54,5 +55,18 @@ async def create_character(world_id: str, body: CharacterInput) -> dict:
 async def update_character(character_id: str, body: CharacterInput) -> dict:
     try:
         return store.update_character(character_id, body.model_dump())
+    except Exception as error:
+        raise api_error(error) from error
+
+
+@router.post("/worlds/{world_id}/sync")
+async def sync_cognition(world_id: str) -> dict:
+    try:
+        return await sync_world_cognition(
+            store=store,
+            client=provider_client,
+            profile=active_profile(),
+            world_id=world_id,
+        )
     except Exception as error:
         raise api_error(error) from error

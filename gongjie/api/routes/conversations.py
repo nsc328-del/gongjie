@@ -3,8 +3,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
+from gongjie.ai.providers import ProviderError
 from gongjie.api.errors import api_error
-from gongjie.api.schemas import BranchCreate, ConversationCreate, TurnInput
+from gongjie.api.schemas import ConversationCreate, TurnInput
+from gongjie.cognition.compiler import opening_request_context
 from gongjie.runtime import active_profile, provider_client, store
 from gongjie.scenes.turns import stream_turn
 
@@ -22,38 +24,37 @@ async def create_conversation(body: ConversationCreate) -> dict:
 
 
 @router.get("/{conversation_id}")
-async def conversation(conversation_id: str, branch_id: str | None = None) -> dict:
+async def conversation(conversation_id: str) -> dict:
     try:
-        return store.get_conversation(conversation_id, branch_id)
+        return store.get_conversation(conversation_id)
     except Exception as error:
         raise api_error(error) from error
 
 
-@router.post("/{conversation_id}/branches")
-async def fork_branch(conversation_id: str, body: BranchCreate) -> dict:
+@router.post("/{conversation_id}/opening")
+async def opening(conversation_id: str) -> dict:
     try:
-        branch_id = store.fork_branch(
-            conversation_id, body.parent_branch_id, body.from_message_id, body.title
+        current = store.get_conversation(conversation_id)
+        if current["messages"]:
+            return {"created": False, "message": current["messages"][0]}
+        profile = active_profile()
+        context = store.context_for_turn(conversation_id)
+        reply = await provider_client.response(
+            opening_request_context(context, profile), profile
         )
-        return store.get_conversation(conversation_id, branch_id)
-    except Exception as error:
-        raise api_error(error) from error
-
-
-@router.post("/{conversation_id}/branches/{branch_id}/activate")
-async def activate_branch(conversation_id: str, branch_id: str) -> dict:
-    try:
-        store.activate_branch(conversation_id, branch_id)
-        return store.get_conversation(conversation_id, branch_id)
-    except Exception as error:
-        raise api_error(error) from error
-
-
-@router.post("/{conversation_id}/branches/{branch_id}/canon")
-async def promote_branch(conversation_id: str, branch_id: str) -> dict:
-    try:
-        store.promote_branch(conversation_id, branch_id)
-        return store.get_conversation(conversation_id, branch_id)
+        content = reply.content.strip()
+        if not content:
+            raise ProviderError("empty_reply", "角色没有成功走进这一刻")
+        usage = reply.usage
+        message, created = store.add_opening_message(
+            conversation_id,
+            content,
+            reasoning=reply.reasoning,
+            finish_reason=reply.finish_reason,
+            input_tokens=usage.input_tokens if usage else None,
+            output_tokens=usage.output_tokens if usage else None,
+        )
+        return {"created": created, "message": message}
     except Exception as error:
         raise api_error(error) from error
 
@@ -65,7 +66,6 @@ async def turn(conversation_id: str, body: TurnInput, request: Request) -> Strea
         provider_client=provider_client,
         profile_loader=active_profile,
         conversation_id=conversation_id,
-        branch_id=body.branch_id,
         content=body.content,
         continuation=body.continuation,
         is_disconnected=request.is_disconnected,

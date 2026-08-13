@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from gongjie.api.routes import conversations, providers, worlds
+from gongjie.api.routes import conversations, providers, rooms, worlds
 from gongjie.paths import STATIC_DIR
 from gongjie.runtime import secrets, store
 
@@ -14,6 +14,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(worlds.router)
 app.include_router(conversations.router)
 app.include_router(providers.router)
+app.include_router(rooms.router)
 
 
 @app.get("/")

@@ -30,11 +30,14 @@ async def test_provider() -> dict:
             RequestContext(
                 system="只回复：连接成功",
                 messages=[ContextMessage(role="user", content="测试")],
-                max_tokens=32,
+                max_tokens=512,
                 temperature=0,
             ),
             profile,
         )
-        return {"ok": True, "reply": reply.content.strip(), "model": reply.model or profile["model"]}
+        content = reply.content.strip()
+        if not content:
+            raise ProviderError("empty_reply", "模型已连接，但没有返回正文", retryable=True)
+        return {"ok": True, "reply": content, "model": reply.model or profile["model"]}
     except ProviderError as error:
         raise HTTPException(400, error.public_dict()) from error

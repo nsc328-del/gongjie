@@ -171,7 +171,8 @@ class OpenAICompatibleAdapter:
             output_tokens=int(usage_obj.get("completion_tokens", usage_obj.get("output_tokens", 0)) or 0),
             cached_input_tokens=details.get("cached_tokens", usage_obj.get("cache_read_input_tokens")),
         ) if usage_obj else None
-        return ReplySnapshot(content=str(content), finish_reason=choice.get("finish_reason"), model=payload.get("model"), usage=usage)
+        reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+        return ReplySnapshot(content=str(content), reasoning=str(reasoning), finish_reason=choice.get("finish_reason"), model=payload.get("model"), usage=usage)
 
 
 class AnthropicMessagesAdapter:
