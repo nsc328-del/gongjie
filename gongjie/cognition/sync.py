@@ -8,7 +8,12 @@ from gongjie.ai.providers import ContextMessage, ProviderClient, RequestContext
 from gongjie.storage.store import Store
 
 
-def summary_context(item: dict[str, Any], world: dict[str, Any], profile: dict[str, Any]) -> RequestContext:
+def summary_context(
+    item: dict[str, Any],
+    world: dict[str, Any],
+    profile: dict[str, Any],
+    output_budget: int = 2048,
+) -> RequestContext:
     character = item["character"]
     relationship = item.get("relationship") or {}
     new_events = item.get("new_events") or []
@@ -56,8 +61,8 @@ def summary_context(item: dict[str, Any], world: dict[str, Any], profile: dict[s
     return RequestContext(
         system=system,
         messages=[ContextMessage(role="user", content=json.dumps(payload, ensure_ascii=False))],
-        max_tokens=min(int(profile.get("max_tokens") or 512), 512),
-        temperature=0.35,
+        max_tokens=min(int(profile.get("max_tokens") or output_budget), output_budget),
+        temperature=0.35, thinking=False,
     )
 
 
@@ -72,14 +77,17 @@ async def sync_world_cognition(
     affected = [item for item in context["characters"] if item["new_events"]]
 
     async def generate(item: dict[str, Any]) -> tuple[str, str]:
-        reply = await client.response(summary_context(item, context["world"], profile), profile)
-        summary = " ".join(reply.content.strip().strip('“”"').splitlines()).strip()
-        if not summary:
-            raise ValueError("character_summary_empty")
-        return item["character"]["id"], summary[:120]
+        for output_budget in (2048, 4096):
+            reply = await client.response(
+                summary_context(item, context["world"], profile, output_budget), profile
+            )
+            summary = " ".join(reply.content.strip().strip('“”"').splitlines()).strip()
+            if summary:
+                return item["character"]["id"], summary[:120]
+        return item["character"]["id"], ""
 
     generated = await asyncio.gather(*(generate(item) for item in affected))
-    summaries = dict(generated)
+    summaries = {character_id: summary for character_id, summary in generated if summary}
     result = store.commit_cognition_sync(
         world_id,
         [event["id"] for event in pending],

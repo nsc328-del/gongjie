@@ -19,6 +19,8 @@ class RequestContext:
     messages: list[ContextMessage]
     max_tokens: int | None = None
     temperature: float | None = None
+    thinking: bool | None = None
+    reasoning_effort: str | None = None
 
 
 @dataclass(slots=True)
@@ -119,6 +121,10 @@ class OpenAICompatibleAdapter:
             body["max_tokens"] = context.max_tokens
         if context.temperature is not None:
             body["temperature"] = context.temperature
+        if profile["model"].split("/")[-1].startswith("deepseek-v4-") and context.thinking is not None:
+            body["thinking"] = {"type": "enabled" if context.thinking else "disabled"}
+            if context.thinking and context.reasoning_effort:
+                body["reasoning_effort"] = context.reasoning_effort
         return _endpoint(profile), {"Authorization": f"Bearer {profile['api_key']}", "Content-Type": "application/json"}, body
 
     def parse_stream(self, payload: str) -> list[StreamEvent]:

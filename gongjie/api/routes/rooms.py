@@ -23,8 +23,9 @@ async def list_rooms(world_id: str) -> dict:
 @router.post("/worlds/{world_id}/rooms")
 async def create_room(world_id: str, body: RoomInput) -> dict:
     try:
-        room = store.create_room(world_id, body.name, body.location_id, body.character_ids)
-        return room
+        with store.world_operation(world_id):
+            room = store.create_room(world_id, body.name, body.location_id, body.character_ids)
+            return room
     except Exception as error:
         raise api_error(error) from error
 
@@ -37,11 +38,20 @@ async def room(room_id: str) -> dict:
         raise api_error(error) from error
 
 
+@router.post("/rooms/{room_id}/enter")
+async def enter_room(room_id: str) -> dict:
+    try:
+        return store.enter_room(room_id)
+    except Exception as error:
+        raise api_error(error) from error
+
+
 @router.delete("/rooms/{room_id}")
 async def delete_room(room_id: str) -> dict:
     try:
-        store.delete_room(room_id)
-        return {"ok": True}
+        with store.world_operation(store.get_room(room_id)["world"]["id"]):
+            store.delete_room(room_id)
+            return {"ok": True}
     except Exception as error:
         raise api_error(error) from error
 

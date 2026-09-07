@@ -33,6 +33,14 @@ class WorldInput(BaseModel):
     template_id: str | None = None
 
 
+class WorldResetInput(BaseModel):
+    confirmation: str
+
+
+class PulseInput(BaseModel):
+    target_time: str = Field(default="", max_length=120)
+
+
 class LocationInput(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     description: str = ""

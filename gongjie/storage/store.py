@@ -6,10 +6,13 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
+
+from gongjie.domain.knowledge import knowledge_projection, public_identity, player_observation
+from gongjie.domain.patches import validate_patch
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 11
 
 
 def now() -> str:
@@ -31,6 +34,26 @@ def _loads(value: str | None, default: Any) -> Any:
         return json.loads(value)
     except json.JSONDecodeError:
         return default
+
+
+def _looks_like_clock_time(value: str) -> bool:
+    """Return True when the value is a real-world clock/ISO time, not story time."""
+    if not value:
+        return False
+    import re
+
+    if re.fullmatch(r"\d{1,2}:\d{2}(:\d{2})?", value):
+        return True
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:?\d{2})?", value):
+        return True
+    return False
+
+
+def _sanitize_world_time(value: str | None, fallback: str = "") -> str:
+    clean = str(value or "").strip()
+    if _looks_like_clock_time(clean):
+        return fallback
+    return clean
 
 
 SCHEMA = """
@@ -93,6 +116,60 @@ CREATE TABLE IF NOT EXISTS relationships (
     notes TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL,
     CHECK ((to_character_id IS NOT NULL AND to_user = 0) OR (to_character_id IS NULL AND to_user = 1))
+);
+
+CREATE TABLE IF NOT EXISTS world_reset_baselines (
+    world_id TEXT PRIMARY KEY REFERENCES worlds(id) ON DELETE CASCADE,
+    current_time TEXT NOT NULL DEFAULT '',
+    captured_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS character_reset_baselines (
+    character_id TEXT PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
+    current_location_id TEXT REFERENCES locations(id) ON DELETE SET NULL,
+    state_summary TEXT NOT NULL DEFAULT '',
+    captured_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS relationship_reset_baselines (
+    relationship_id TEXT PRIMARY KEY REFERENCES relationships(id) ON DELETE CASCADE,
+    label TEXT NOT NULL DEFAULT '',
+    trust INTEGER NOT NULL DEFAULT 0,
+    desire INTEGER NOT NULL DEFAULT 0,
+    tension INTEGER NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT '',
+    captured_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS world_flow_states (
+    world_id TEXT PRIMARY KEY REFERENCES worlds(id) ON DELETE CASCADE,
+    player_location_id TEXT REFERENCES locations(id) ON DELETE SET NULL,
+    player_condition TEXT NOT NULL DEFAULT '',
+    visible_traces TEXT NOT NULL DEFAULT '[]',
+    pulse_narration TEXT NOT NULL DEFAULT '',
+    pulse_number INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS player_commitments (
+    id TEXT PRIMARY KEY,
+    world_id TEXT NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
+    character_id TEXT REFERENCES characters(id) ON DELETE CASCADE,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(world_id, character_id, text)
+);
+
+CREATE TABLE IF NOT EXISTS character_world_states (
+    character_id TEXT PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
+    intention TEXT NOT NULL DEFAULT '',
+    surface_state TEXT NOT NULL DEFAULT '',
+    encounter_hook TEXT NOT NULL DEFAULT '',
+    availability TEXT NOT NULL DEFAULT 'reachable'
+        CHECK (availability IN ('present','reachable','incoming','unavailable')),
+    pulse_number INTEGER NOT NULL DEFAULT 0,
+    interacted_since_pulse INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS conversations (
@@ -190,6 +267,11 @@ CREATE TABLE IF NOT EXISTS scene_rooms (
     world_id TEXT NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     location_id TEXT REFERENCES locations(id) ON DELETE SET NULL,
+    world_time TEXT NOT NULL DEFAULT '',
+    tension INTEGER NOT NULL DEFAULT 0,
+    active_threads TEXT NOT NULL DEFAULT '[]',
+    physical_state TEXT NOT NULL DEFAULT '',
+    emotional_state TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -214,6 +296,68 @@ CREATE TABLE IF NOT EXISTS room_messages (
 
 CREATE INDEX IF NOT EXISTS idx_room_messages_room_sequence
 ON room_messages(room_id, sequence);
+
+CREATE TABLE IF NOT EXISTS room_event_sources (
+    event_id TEXT PRIMARY KEY REFERENCES world_events(id) ON DELETE CASCADE,
+    room_id TEXT REFERENCES scene_rooms(id) ON DELETE SET NULL,
+    room_message_id TEXT REFERENCES room_messages(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_room_event_sources_room
+ON room_event_sources(room_id, room_message_id);
+
+CREATE TABLE IF NOT EXISTS turn_settlements (
+    id TEXT PRIMARY KEY,
+    world_id TEXT NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
+    conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+    room_id TEXT REFERENCES scene_rooms(id) ON DELETE CASCADE,
+    source_message_id TEXT REFERENCES messages(id) ON DELETE CASCADE,
+    source_room_message_id TEXT REFERENCES room_messages(id) ON DELETE CASCADE,
+    event_id TEXT REFERENCES world_events(id) ON DELETE SET NULL,
+    scene TEXT NOT NULL DEFAULT '{}',
+    relationship TEXT NOT NULL DEFAULT '{}',
+    player TEXT NOT NULL DEFAULT '{}',
+    evidence TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    CHECK (
+        (source_message_id IS NOT NULL AND source_room_message_id IS NULL)
+        OR (source_message_id IS NULL AND source_room_message_id IS NOT NULL)
+    ),
+    UNIQUE(source_message_id),
+    UNIQUE(source_room_message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_turn_settlements_conversation
+ON turn_settlements(conversation_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_turn_settlements_room
+ON turn_settlements(room_id, created_at);
+
+CREATE TABLE IF NOT EXISTS conversation_scene_entries (
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    pulse_number INTEGER NOT NULL,
+    message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+    entry_kind TEXT NOT NULL CHECK (entry_kind IN ('initial','reentry')),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(conversation_id, pulse_number)
+);
+
+CREATE TABLE IF NOT EXISTS settlement_jobs (
+    position INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id TEXT NOT NULL UNIQUE,
+    world_id TEXT NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
+    conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+    room_id TEXT REFERENCES scene_rooms(id) ON DELETE CASCADE,
+    source_message_id TEXT UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+    source_room_message_id TEXT UNIQUE REFERENCES room_messages(id) ON DELETE CASCADE,
+    character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+    context TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','failed','complete')),
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    CHECK ((source_message_id IS NOT NULL AND source_room_message_id IS NULL)
+        OR (source_message_id IS NULL AND source_room_message_id IS NOT NULL))
+);
 """
 
 
@@ -221,6 +365,73 @@ class Store:
     def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._active_worlds: set[str] = set()
+
+    @contextmanager
+    def world_operation(self, world_id: str, *, recovery: bool = False) -> Iterator[None]:
+        if world_id in self._active_worlds:
+            raise ValueError("世界正在留下痕迹，请稍候")
+        if not recovery and self.pending_settlements(world_id):
+            raise ValueError("还有未记下的余波，请先重新记录")
+        self._active_worlds.add(world_id)
+        try:
+            yield
+        finally:
+            self._active_worlds.discard(world_id)
+
+    def pending_settlements(self, world_id: str) -> list[dict[str, Any]]:
+        with self.read() as connection:
+            return [dict(row) for row in connection.execute(
+                """SELECT source_id,conversation_id,room_id,character_id,status,reason
+                   FROM settlement_jobs WHERE world_id=? AND status!='complete'
+                   ORDER BY position""", (world_id,),
+            )]
+
+    @staticmethod
+    def _enqueue_settlement(connection: sqlite3.Connection, source_id: str, context: dict[str, Any]) -> None:
+        room_id = (context.get("room") or {}).get("id")
+        conversation_id = (context.get("conversation") or {}).get("id")
+        connection.execute(
+            """INSERT INTO settlement_jobs(source_id,world_id,conversation_id,room_id,
+                   source_message_id,source_room_message_id,character_id,context,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (source_id, context["world"]["id"], conversation_id, room_id,
+             None if room_id else source_id, source_id if room_id else None,
+             context["character"]["id"], _json(context), now()),
+        )
+
+    def settlement_job(self, source_id: str) -> dict[str, Any]:
+        with self.read() as connection:
+            row = connection.execute("SELECT * FROM settlement_jobs WHERE source_id=?", (source_id,)).fetchone()
+            if not row:
+                raise KeyError("settlement_not_found")
+            job = dict(row)
+            table = "room_messages" if job["room_id"] else "messages"
+            job["reply"] = connection.execute(f"SELECT content FROM {table} WHERE id=?", (source_id,)).fetchone()[0]
+            job["context"] = _loads(job["context"], {})
+        return job
+
+    def fail_settlement(self, source_id: str, reason: str) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "UPDATE settlement_jobs SET status='failed',reason=? WHERE source_id=? AND status!='complete'",
+                (reason, source_id),
+            )
+
+    @classmethod
+    def _existing_patch_result(cls, connection: sqlite3.Connection, source_id: str) -> dict[str, Any] | None:
+        row = connection.execute(
+            "SELECT * FROM turn_settlements WHERE source_message_id=? OR source_room_message_id=?",
+            (source_id, source_id),
+        ).fetchone()
+        if not row:
+            return None
+        settlement = cls._settlement(row)
+        event = connection.execute("SELECT * FROM world_events WHERE id=?", (row["event_id"],)).fetchone()
+        record = dict(event) if event else None
+        if record and row["source_room_message_id"]:
+            record["source_room_message_id"] = row["source_room_message_id"]
+        return {"event_id": row["event_id"], "record": record, "settlement": settlement}
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
@@ -251,7 +462,8 @@ class Store:
             connection.close()
 
     def initialize(self) -> None:
-        with self._connect() as connection:
+        connection = self._connect()
+        try:
             tables = {
                 row[0]
                 for row in connection.execute(
@@ -262,7 +474,15 @@ class Store:
                 self._migrate_from_branches(connection)
             connection.executescript(SCHEMA)
             self._ensure_v4_columns(connection)
+            self._ensure_v6_columns(connection)
+            self._ensure_v7_baselines(connection)
+            self._ensure_v8_flow(connection)
+            if "evidence" not in {row[1] for row in connection.execute("PRAGMA table_info(turn_settlements)")}:
+                connection.execute("ALTER TABLE turn_settlements ADD COLUMN evidence TEXT NOT NULL DEFAULT '{}'")
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            connection.commit()
+        finally:
+            connection.close()
         with self.read() as connection:
             count = connection.execute("SELECT COUNT(*) FROM worlds").fetchone()[0]
         if count == 0:
@@ -311,6 +531,81 @@ class Store:
                     "UPDATE characters SET opening_hook=? WHERE id=?",
                     (opening_hook, character_id),
                 )
+
+    @staticmethod
+    def _ensure_v6_columns(connection: sqlite3.Connection) -> None:
+        room_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(scene_rooms)")
+        }
+        additions = {
+            "world_time": "TEXT NOT NULL DEFAULT ''",
+            "tension": "INTEGER NOT NULL DEFAULT 0",
+            "active_threads": "TEXT NOT NULL DEFAULT '[]'",
+            "physical_state": "TEXT NOT NULL DEFAULT ''",
+            "emotional_state": "TEXT NOT NULL DEFAULT ''",
+        }
+        for column, definition in additions.items():
+            if column not in room_columns:
+                connection.execute(
+                    f"ALTER TABLE scene_rooms ADD COLUMN {column} {definition}"
+                )
+        connection.execute(
+            """UPDATE scene_rooms
+               SET world_time=(
+                   SELECT worlds.current_time FROM worlds WHERE worlds.id=scene_rooms.world_id
+               )
+               WHERE world_time=''"""
+        )
+
+    @staticmethod
+    def _capture_reset_baseline(
+        connection: sqlite3.Connection, world_id: str, captured_at: str
+    ) -> None:
+        connection.execute(
+            """INSERT OR IGNORE INTO world_reset_baselines(world_id,current_time,captured_at)
+               SELECT worlds.id,worlds.current_time,? FROM worlds WHERE worlds.id=?""",
+            (captured_at, world_id),
+        )
+        connection.execute(
+            """INSERT OR IGNORE INTO character_reset_baselines(
+                   character_id,current_location_id,state_summary,captured_at)
+               SELECT id,current_location_id,state_summary,? FROM characters WHERE world_id=?""",
+            (captured_at, world_id),
+        )
+        connection.execute(
+            """INSERT OR IGNORE INTO relationship_reset_baselines(
+                   relationship_id,label,trust,desire,tension,notes,captured_at)
+               SELECT id,label,trust,desire,tension,notes,? FROM relationships WHERE world_id=?""",
+            (captured_at, world_id),
+        )
+
+    @classmethod
+    def _ensure_v7_baselines(cls, connection: sqlite3.Connection) -> None:
+        captured_at = now()
+        world_ids = [
+            row[0] for row in connection.execute("SELECT id FROM worlds").fetchall()
+        ]
+        for world_id in world_ids:
+            cls._capture_reset_baseline(connection, world_id, captured_at)
+
+    @staticmethod
+    def _ensure_v8_flow(connection: sqlite3.Connection) -> None:
+        created = now()
+        connection.execute(
+            """INSERT OR IGNORE INTO world_flow_states(
+                   world_id,player_location_id,player_condition,visible_traces,
+                   pulse_narration,pulse_number,updated_at)
+               SELECT id,NULL,'','[]','',0,? FROM worlds""",
+            (created,),
+        )
+        connection.execute(
+            """INSERT OR IGNORE INTO character_world_states(
+                   character_id,intention,surface_state,encounter_hook,availability,
+                   pulse_number,interacted_since_pulse,updated_at)
+               SELECT id,'',state_summary,opening_hook,'reachable',0,0,?
+               FROM characters""",
+            (created,),
+        )
 
     def _migrate_from_branches(self, connection: sqlite3.Connection) -> None:
         """Collapse each legacy conversation onto its canonical visible history."""
@@ -578,6 +873,8 @@ class Store:
                 "INSERT INTO provider_profiles VALUES (?,?,?,?,?,?,?,?,?,?)",
                 ("provider_default", "我的模型", "openai-compatible", "https://api.openai.com", "/v1/chat/completions", "", 16384, 0.95, 1, created),
             )
+            self._capture_reset_baseline(connection, world_id, created)
+            self._ensure_v8_flow(connection)
 
     @staticmethod
     def _character(row: sqlite3.Row) -> dict[str, Any]:
@@ -596,6 +893,142 @@ class Store:
         result = dict(row)
         result["active_threads"] = _loads(result.get("active_threads"), [])
         return result
+
+    @staticmethod
+    def _settlement(row: sqlite3.Row) -> dict[str, Any]:
+        result = dict(row)
+        for key in ("scene", "relationship", "player", "evidence"):
+            result[key] = _loads(result.get(key), {})
+        return result
+
+    @staticmethod
+    def _player_state(
+        row: sqlite3.Row | None, commitments: list[sqlite3.Row] | None = None
+    ) -> dict[str, Any]:
+        if not row:
+            return {
+                "location_id": None, "location_name": None, "condition": "",
+                "visible_traces": [], "commitments": [],
+            }
+        result = dict(row)
+        return {
+            "location_id": result.get("player_location_id"),
+            "location_name": result.get("player_location_name"),
+            "condition": result.get("player_condition", ""),
+            "visible_traces": _loads(result.get("visible_traces"), []),
+            "commitments": [dict(item) for item in (commitments or [])],
+        }
+
+    @staticmethod
+    def _insert_turn_settlement(
+        connection: sqlite3.Connection,
+        *,
+        world_id: str,
+        conversation_id: str | None = None,
+        room_id: str | None = None,
+        source_message_id: str | None = None,
+        source_room_message_id: str | None = None,
+        event_id: str | None = None,
+        patch: dict[str, Any],
+        created_at: str,
+    ) -> dict[str, Any]:
+        def text(value: Any, limit: int) -> str:
+            return str(value or "").strip()[:limit]
+
+        def string_list(value: Any, limit: int, item_limit: int) -> list[str]:
+            if not isinstance(value, list):
+                return []
+            return list(dict.fromkeys(
+                text(item, item_limit) for item in value if text(item, item_limit)
+            ))[:limit]
+
+        raw_scene = patch.get("scene") if isinstance(patch.get("scene"), dict) else {}
+        scene: dict[str, Any] = {}
+        for key in ("location_id", "location"):
+            if text(raw_scene.get(key), 120):
+                scene[key] = text(raw_scene[key], 120)
+        world_time = _sanitize_world_time(text(raw_scene.get("world_time"), 120))
+        if world_time:
+            scene["world_time"] = world_time
+        if "tension" in raw_scene:
+            try:
+                scene["tension"] = max(0, min(100, int(raw_scene["tension"])))
+            except (TypeError, ValueError):
+                pass
+        for key, limit in (("active_threads", 4), ("visible_traces", 8)):
+            # visible_traces belongs to player, but keeping the allowlist here
+            # makes accidental cross-section data harmless if a model returns it.
+            if key in raw_scene:
+                scene[key] = string_list(raw_scene[key], limit, 160)
+        for key in ("physical_state", "emotional_state"):
+            value = text(raw_scene.get(key), 200)
+            if value:
+                scene[key] = value
+
+        raw_relationship = (
+            patch.get("relationship")
+            if isinstance(patch.get("relationship"), dict) else {}
+        )
+        relationship: dict[str, Any] = {}
+        for key, low, high in (
+            ("trust_delta", -5, 5),
+            ("desire_delta", -5, 5),
+            ("tension_delta", -8, 8),
+        ):
+            if key in raw_relationship:
+                try:
+                    relationship[key] = max(low, min(high, int(raw_relationship[key])))
+                except (TypeError, ValueError):
+                    pass
+        for key, limit in (("label", 80), ("note", 200)):
+            value = text(raw_relationship.get(key), limit)
+            if value:
+                relationship[key] = value
+
+        raw_player = patch.get("player") if isinstance(patch.get("player"), dict) else {}
+        player: dict[str, Any] = {}
+        for key, limit in (("location_id", 120), ("location", 120), ("condition", 200)):
+            value = text(raw_player.get(key), limit)
+            if value:
+                player[key] = value
+        if "visible_traces" in raw_player:
+            player["visible_traces"] = string_list(raw_player["visible_traces"], 8, 160)
+        if "commitments" in raw_player:
+            player["commitments"] = string_list(raw_player["commitments"], 6, 160)
+
+        settlement = {
+            "id": uid("settle"),
+            "world_id": world_id,
+            "conversation_id": conversation_id,
+            "room_id": room_id,
+            "source_message_id": source_message_id,
+            "source_room_message_id": source_room_message_id,
+            "event_id": event_id,
+            "scene": scene,
+            "relationship": relationship,
+            "player": player,
+            "created_at": created_at,
+            "evidence": patch.get("evidence", {}),
+        }
+        connection.execute(
+            """INSERT INTO turn_settlements(
+                   id,world_id,conversation_id,room_id,source_message_id,
+                   source_room_message_id,event_id,scene,relationship,player,created_at,evidence)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                settlement["id"], settlement["world_id"], settlement["conversation_id"],
+                settlement["room_id"], settlement["source_message_id"],
+                settlement["source_room_message_id"], settlement["event_id"],
+                _json(settlement["scene"]), _json(settlement["relationship"]),
+                _json(settlement["player"]), settlement["created_at"],
+                _json(patch.get("evidence", {})),
+            ),
+        )
+        connection.execute(
+            "UPDATE settlement_jobs SET status='complete',reason='' WHERE source_id=?",
+            (source_message_id or source_room_message_id,),
+        )
+        return settlement
 
     def list_worlds(self) -> list[dict[str, Any]]:
         with self.read() as connection:
@@ -639,6 +1072,8 @@ class Store:
             )
             if template_id == "velvet_harbor":
                 self._insert_velvet_template(connection, world_id, created)
+            self._capture_reset_baseline(connection, world_id, created)
+            self._ensure_v8_flow(connection)
         return self.get_world(world_id)
 
     def _insert_velvet_template(
@@ -696,6 +1131,12 @@ class Store:
             )
             if not result.rowcount:
                 raise KeyError("world_not_found")
+            if "current_time" in updates:
+                connection.execute(
+                    """UPDATE world_reset_baselines
+                       SET current_time=?,captured_at=? WHERE world_id=?""",
+                    (updates["current_time"], now(), world_id),
+                )
         return self.get_world(world_id)
 
     def create_location(self, world_id: str, values: dict[str, Any]) -> dict[str, Any]:
@@ -750,6 +1191,17 @@ class Store:
                 "INSERT INTO relationships VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (uid("rel"), world_id, character_id, None, 1, "未命名的牵引", 0, 0, 0, "", created),
             )
+            connection.execute(
+                """INSERT INTO character_world_states(
+                       character_id,intention,surface_state,encounter_hook,availability,
+                       pulse_number,interacted_since_pulse,updated_at)
+                   VALUES (?,?,?,?,?,0,0,?)""",
+                (
+                    character_id, "", tagline,
+                    values.get("opening_hook", "").strip(), "reachable", created,
+                ),
+            )
+            self._capture_reset_baseline(connection, world_id, created)
         return self.get_character(character_id)
 
     def update_character(self, character_id: str, values: dict[str, Any]) -> dict[str, Any]:
@@ -785,7 +1237,132 @@ class Store:
                 f"UPDATE characters SET {assignments}, updated_at=? WHERE id=?",
                 [*updates.values(), now(), character_id],
             )
+            baseline_updates: dict[str, Any] = {}
+            if "current_location_id" in updates:
+                baseline_updates["current_location_id"] = updates["current_location_id"]
+            if "tagline" in updates:
+                baseline_updates["state_summary"] = updates["tagline"]
+            if baseline_updates:
+                baseline_assignments = ",".join(
+                    f"{key}=?" for key in baseline_updates
+                )
+                connection.execute(
+                    f"""UPDATE character_reset_baselines
+                         SET {baseline_assignments},captured_at=? WHERE character_id=?""",
+                    [*baseline_updates.values(), now(), character_id],
+                )
         return self.get_character(character_id)
+
+    def reset_world(self, world_id: str, confirmation: str) -> dict[str, Any]:
+        """Delete story progress and restore the last authored world baseline."""
+        reset_at = now()
+        with self.transaction() as connection:
+            world = connection.execute(
+                "SELECT id,name FROM worlds WHERE id=?", (world_id,)
+            ).fetchone()
+            if not world:
+                raise KeyError("world_not_found")
+            if confirmation.strip() != world["name"]:
+                raise ValueError("reset_confirmation_mismatch")
+
+            self._capture_reset_baseline(connection, world_id, reset_at)
+            counts = {
+                "conversations": connection.execute(
+                    "SELECT COUNT(*) FROM conversations WHERE world_id=?", (world_id,)
+                ).fetchone()[0],
+                "messages": connection.execute(
+                    """SELECT COUNT(*) FROM messages m
+                       JOIN conversations c ON c.id=m.conversation_id
+                       WHERE c.world_id=?""",
+                    (world_id,),
+                ).fetchone()[0],
+                "rooms": connection.execute(
+                    "SELECT COUNT(*) FROM scene_rooms WHERE world_id=?", (world_id,)
+                ).fetchone()[0],
+                "events": connection.execute(
+                    "SELECT COUNT(*) FROM world_events WHERE world_id=?", (world_id,)
+                ).fetchone()[0],
+            }
+
+            connection.execute("DELETE FROM world_events WHERE world_id=?", (world_id,))
+            connection.execute("DELETE FROM conversations WHERE world_id=?", (world_id,))
+            connection.execute("DELETE FROM scene_rooms WHERE world_id=?", (world_id,))
+            connection.execute("DELETE FROM player_commitments WHERE world_id=?", (world_id,))
+            connection.execute(
+                """UPDATE characters
+                   SET current_location_id=(
+                         SELECT b.current_location_id FROM character_reset_baselines b
+                         WHERE b.character_id=characters.id
+                       ),
+                       state_summary=COALESCE((
+                         SELECT b.state_summary FROM character_reset_baselines b
+                         WHERE b.character_id=characters.id
+                       ),tagline),
+                       summary_updated_at=NULL,updated_at=?
+                   WHERE world_id=?""",
+                (reset_at, world_id),
+            )
+            connection.execute(
+                """UPDATE relationships
+                   SET label=COALESCE((
+                         SELECT b.label FROM relationship_reset_baselines b
+                         WHERE b.relationship_id=relationships.id
+                       ),label),
+                       trust=COALESCE((
+                         SELECT b.trust FROM relationship_reset_baselines b
+                         WHERE b.relationship_id=relationships.id
+                       ),trust),
+                       desire=COALESCE((
+                         SELECT b.desire FROM relationship_reset_baselines b
+                         WHERE b.relationship_id=relationships.id
+                       ),desire),
+                       tension=COALESCE((
+                         SELECT b.tension FROM relationship_reset_baselines b
+                         WHERE b.relationship_id=relationships.id
+                       ),tension),
+                       notes=COALESCE((
+                         SELECT b.notes FROM relationship_reset_baselines b
+                         WHERE b.relationship_id=relationships.id
+                       ),notes),
+                       updated_at=?
+                   WHERE world_id=?""",
+                (reset_at, world_id),
+            )
+            connection.execute(
+                """UPDATE worlds
+                   SET current_time=COALESCE((
+                         SELECT b.current_time FROM world_reset_baselines b
+                         WHERE b.world_id=worlds.id
+                       ),current_time),updated_at=?
+                   WHERE id=?""",
+                (reset_at, world_id),
+            )
+            connection.execute(
+                """UPDATE world_flow_states
+                   SET player_location_id=NULL,player_condition='',visible_traces='[]',
+                       pulse_narration='',pulse_number=0,updated_at=?
+                   WHERE world_id=?""",
+                (reset_at, world_id),
+            )
+            connection.execute(
+                """UPDATE character_world_states
+                   SET intention='',
+                       surface_state=COALESCE((
+                           SELECT c.tagline FROM characters c
+                           WHERE c.id=character_world_states.character_id
+                       ),''),
+                       encounter_hook=COALESCE((
+                           SELECT c.opening_hook FROM characters c
+                           WHERE c.id=character_world_states.character_id
+                       ),''),
+                       availability='reachable',pulse_number=0,
+                       interacted_since_pulse=0,updated_at=?
+                   WHERE character_id IN (
+                       SELECT id FROM characters WHERE world_id=?
+                   )""",
+                (reset_at, world_id),
+            )
+        return {"world": self.get_world(world_id), "cleared": counts}
 
     def get_world(self, world_id: str) -> dict[str, Any]:
         with self.read() as connection:
@@ -797,12 +1374,15 @@ class Store:
             )]
             characters = [self._character(row) for row in connection.execute(
                 """SELECT c.*, l.name AS location_name,
+                          ws.surface_state,ws.encounter_hook,ws.availability,
+                          ws.pulse_number,ws.interacted_since_pulse,
                           EXISTS(
                               SELECT 1 FROM conversations cv
                               JOIN messages m ON m.conversation_id=cv.id
                               WHERE cv.character_id=c.id
                           ) AS has_messages
                    FROM characters c LEFT JOIN locations l ON l.id=c.current_location_id
+                   LEFT JOIN character_world_states ws ON ws.character_id=c.id
                    WHERE c.world_id=? ORDER BY c.sort_order,c.name""", (world_id,)
             )]
             events = [dict(row) for row in connection.execute(
@@ -818,10 +1398,30 @@ class Store:
                 "SELECT COUNT(*) FROM world_events WHERE world_id=? AND cognition_synced=0",
                 (world_id,),
             ).fetchone()[0]
+            flow = connection.execute(
+                """SELECT f.*,l.name AS player_location_name
+                   FROM world_flow_states f
+                   LEFT JOIN locations l ON l.id=f.player_location_id
+                   WHERE f.world_id=?""",
+                (world_id,),
+            ).fetchone()
+            commitments = connection.execute(
+                """SELECT pc.id,pc.character_id,pc.text,c.name AS character_name
+                   FROM player_commitments pc
+                   LEFT JOIN characters c ON c.id=pc.character_id
+                   WHERE pc.world_id=? ORDER BY pc.created_at""",
+                (world_id,),
+            ).fetchall()
+            player = self._player_state(flow, list(commitments))
+            pulse = {
+                "number": flow["pulse_number"] if flow else 0,
+                "narration": flow["pulse_narration"] if flow else "",
+            }
         return {
             "world": dict(world), "locations": locations, "characters": characters,
             "events": events, "relationships": relationships,
-            "pending_sync_count": pending_sync_count,
+            "pending_sync_count": pending_sync_count, "player": player, "pulse": pulse,
+            "pending_settlements": self.pending_settlements(world_id),
         }
 
     def get_character(self, character_id: str) -> dict[str, Any]:
@@ -836,21 +1436,41 @@ class Store:
         return self._character(row)
 
     def get_or_create_conversation(self, world_id: str, character_id: str) -> str:
+        if self.pending_settlements(world_id) or world_id in self._active_worlds:
+            with self.read() as connection:
+                existing = connection.execute(
+                    "SELECT id FROM conversations WHERE world_id=? AND character_id=?",
+                    (world_id, character_id),
+                ).fetchone()
+            if existing:
+                return existing["id"]
+            raise ValueError("还有未记下的余波，请先重新记录")
         with self.transaction() as connection:
             existing = connection.execute(
                 "SELECT id FROM conversations WHERE world_id=? AND character_id=?",
                 (world_id, character_id),
             ).fetchone()
-            if existing:
-                return existing["id"]
             character = connection.execute(
                 "SELECT name,current_location_id FROM characters WHERE id=? AND world_id=?",
                 (character_id, world_id),
             ).fetchone()
             if not character:
                 raise KeyError("character_not_found")
+            entered_at = now()
+            connection.execute(
+                """INSERT INTO world_flow_states(
+                       world_id,player_location_id,player_condition,visible_traces,
+                       pulse_narration,pulse_number,updated_at)
+                   VALUES (?,?,'','[]','',0,?)
+                   ON CONFLICT(world_id) DO UPDATE SET
+                       player_location_id=excluded.player_location_id,
+                       updated_at=excluded.updated_at""",
+                (world_id, character["current_location_id"], entered_at),
+            )
+            if existing:
+                return existing["id"]
             conversation_id = uid("conv")
-            created = now()
+            created = entered_at
             connection.execute(
                 "INSERT INTO conversations VALUES (?,?,?,?,?,?)",
                 (conversation_id, world_id, character_id, f"与{character['name']}的对话", created, created),
@@ -893,9 +1513,76 @@ class Store:
                    WHERE e.source_conversation_id=? ORDER BY e.created_at""",
                 (conversation_id,),
             )]
+            settlements = [self._settlement(row) for row in connection.execute(
+                """SELECT * FROM turn_settlements
+                   WHERE conversation_id=? ORDER BY created_at, id""",
+                (conversation_id,),
+            )]
+            settlement_by_message = {
+                item["source_message_id"]: item for item in settlements
+            }
+            jobs = {row["source_id"]: dict(row) for row in connection.execute(
+                "SELECT source_id,status,reason FROM settlement_jobs WHERE world_id=? AND status!='complete'",
+                (conversation["world_id"],),
+            )}
+            entries = {
+                row["message_id"]: {"pulse_number": row["pulse_number"], "entry_kind": row["entry_kind"]}
+                for row in connection.execute(
+                    "SELECT message_id,pulse_number,entry_kind FROM conversation_scene_entries WHERE conversation_id=?",
+                    (conversation_id,),
+                )
+            }
+            for message in messages:
+                if message["id"] in entries:
+                    message["scene_entry"] = entries[message["id"]]
+                if message["id"] in jobs:
+                    message["settlement_job"] = jobs[message["id"]]
+                settlement = settlement_by_message.get(message["id"])
+                if settlement:
+                    message["settlement"] = settlement
+            player_row = connection.execute(
+                """SELECT f.*,l.name AS player_location_name
+                   FROM world_flow_states f LEFT JOIN locations l ON l.id=f.player_location_id
+                   WHERE f.world_id=?""",
+                (conversation["world_id"],),
+            ).fetchone()
+            pulse_number = int(player_row["pulse_number"] if player_row else 0)
+            scene_entry_row = connection.execute(
+                """SELECT e.conversation_id,e.pulse_number,e.message_id,e.entry_kind,
+                          e.created_at,m.content
+                   FROM conversation_scene_entries e
+                   JOIN messages m ON m.id=e.message_id
+                   WHERE e.conversation_id=? AND e.pulse_number=?""",
+                (conversation_id, pulse_number),
+            ).fetchone()
+            character_world_state = connection.execute(
+                "SELECT availability FROM character_world_states WHERE character_id=?",
+                (conversation["character_id"],),
+            ).fetchone()
+            commitments = connection.execute(
+                """SELECT pc.id,pc.character_id,pc.text,c.name AS character_name
+                   FROM player_commitments pc LEFT JOIN characters c ON c.id=pc.character_id
+                   WHERE pc.world_id=? ORDER BY pc.created_at""",
+                (conversation["world_id"],),
+            ).fetchall()
+        availability = (
+            character_world_state["availability"] if character_world_state else "reachable"
+        )
+        needs_scene_entry = availability != "unavailable" and (
+            not messages if pulse_number == 0 else scene_entry_row is None
+        )
         return {
             "conversation": dict(conversation), "messages": messages, "scene": scene,
             "character": character, "knowledge": knowledge, "records": records,
+            "settlements": settlements,
+            "pending_settlements": self.pending_settlements(conversation["world_id"]),
+            "player": self._player_state(player_row, list(commitments)),
+            "pulse": {
+                "number": pulse_number,
+                "narration": player_row["pulse_narration"] if player_row else "",
+            },
+            "scene_entry": dict(scene_entry_row) if scene_entry_row else None,
+            "needs_scene_entry": needs_scene_entry,
         }
 
     def add_message(
@@ -929,24 +1616,53 @@ class Store:
     ) -> tuple[dict[str, Any], bool]:
         created = now()
         with self.transaction() as connection:
-            if not connection.execute(
-                "SELECT 1 FROM conversations WHERE id=?", (conversation_id,)
-            ).fetchone():
-                raise KeyError("conversation_not_found")
-            existing = connection.execute(
-                "SELECT * FROM messages WHERE conversation_id=? ORDER BY sequence LIMIT 1",
+            conversation = connection.execute(
+                "SELECT world_id,character_id FROM conversations WHERE id=?",
                 (conversation_id,),
             ).fetchone()
-            if existing:
-                return dict(existing), False
+            if not conversation:
+                raise KeyError("conversation_not_found")
+            flow = connection.execute(
+                "SELECT pulse_number FROM world_flow_states WHERE world_id=?",
+                (conversation["world_id"],),
+            ).fetchone()
+            pulse_number = int(flow["pulse_number"] if flow else 0)
+            availability = connection.execute(
+                "SELECT availability FROM character_world_states WHERE character_id=?",
+                (conversation["character_id"],),
+            ).fetchone()
+            if availability and availability["availability"] == "unavailable":
+                raise ValueError("character_unavailable")
+            existing_entry = connection.execute(
+                """SELECT m.* FROM conversation_scene_entries e
+                   JOIN messages m ON m.id=e.message_id
+                   WHERE e.conversation_id=? AND e.pulse_number=?""",
+                (conversation_id, pulse_number),
+            ).fetchone()
+            if existing_entry:
+                return dict(existing_entry), False
+            existing_messages = connection.execute(
+                "SELECT * FROM messages WHERE conversation_id=? ORDER BY sequence",
+                (conversation_id,),
+            ).fetchall()
+            if pulse_number == 0 and existing_messages:
+                return dict(existing_messages[0]), False
             message_id = uid("msg")
+            sequence = (existing_messages[-1]["sequence"] if existing_messages else 0) + 1
+            entry_kind = "reentry" if existing_messages else "initial"
             connection.execute(
                 "INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     message_id, conversation_id, "assistant", content, reasoning,
-                    "complete", finish_reason, input_tokens, output_tokens, 1,
+                    "complete", finish_reason, input_tokens, output_tokens, sequence,
                     created, created,
                 ),
+            )
+            connection.execute(
+                """INSERT INTO conversation_scene_entries(
+                       conversation_id,pulse_number,message_id,entry_kind,created_at)
+                   VALUES (?,?,?,?,?)""",
+                (conversation_id, pulse_number, message_id, entry_kind, created),
             )
             connection.execute(
                 "UPDATE conversations SET updated_at=? WHERE id=?", (created, conversation_id)
@@ -960,6 +1676,7 @@ class Store:
         self, message_id: str, *, content: str, reasoning: str = "",
         status: str = "complete", finish_reason: str | None = None,
         input_tokens: int | None = None, output_tokens: int | None = None,
+        settlement_context: dict[str, Any] | None = None,
     ) -> None:
         with self.transaction() as connection:
             connection.execute(
@@ -967,6 +1684,14 @@ class Store:
                           input_tokens=?,output_tokens=?,updated_at=? WHERE id=?""",
                 (content, reasoning, status, finish_reason, input_tokens, output_tokens, now(), message_id),
             )
+            if settlement_context is not None:
+                if status != "complete" or not content.strip():
+                    raise ValueError("invalid_settlement_message")
+                self._enqueue_settlement(connection, message_id, settlement_context)
+
+    def delete_message(self, message_id: str) -> None:
+        with self.transaction() as connection:
+            connection.execute("DELETE FROM messages WHERE id=?", (message_id,))
 
     def context_for_turn(self, conversation_id: str) -> dict[str, Any]:
         with self.read() as connection:
@@ -991,19 +1716,24 @@ class Store:
                 (conversation_id,),
             )]
             public_events = [dict(row) for row in connection.execute(
-                """SELECT e.*, l.name AS location_name FROM character_knowledge k
-                   JOIN world_events e ON e.id=k.event_id
-                   LEFT JOIN locations l ON l.id=e.location_id
-                   WHERE k.character_id=? AND e.world_id=? AND e.visibility='public'
-                   ORDER BY e.created_at LIMIT 120""", (character["id"], world["id"])
+                """SELECT * FROM (
+                       SELECT e.*, k.state AS knowledge_state, k.belief, k.source,
+                              l.name AS location_name FROM character_knowledge k
+                       JOIN world_events e ON e.id=k.event_id
+                       LEFT JOIN locations l ON l.id=e.location_id
+                       WHERE k.character_id=? AND e.world_id=? AND e.visibility='public'
+                       ORDER BY e.created_at DESC LIMIT 120
+                   ) recent ORDER BY created_at""", (character["id"], world["id"])
             )]
             knowledge = [dict(row) for row in connection.execute(
-                """SELECT e.*, k.state AS knowledge_state, k.belief, k.confidence,
-                          k.source, l.name AS location_name
-                   FROM character_knowledge k JOIN world_events e ON e.id=k.event_id
-                   LEFT JOIN locations l ON l.id=e.location_id
-                   WHERE k.character_id=? AND e.visibility!='public'
-                   ORDER BY e.created_at LIMIT 120""", (character["id"],)
+                """SELECT * FROM (
+                       SELECT e.*, k.state AS knowledge_state, k.belief, k.confidence,
+                              k.source, l.name AS location_name
+                       FROM character_knowledge k JOIN world_events e ON e.id=k.event_id
+                       LEFT JOIN locations l ON l.id=e.location_id
+                       WHERE k.character_id=? AND e.visibility!='public'
+                       ORDER BY e.created_at DESC LIMIT 120
+                   ) recent ORDER BY created_at""", (character["id"],)
             )]
             relationships = [dict(row) for row in connection.execute(
                 "SELECT * FROM relationships WHERE from_character_id=?", (character["id"],)
@@ -1014,16 +1744,146 @@ class Store:
             characters = [self._character(row) for row in connection.execute(
                 "SELECT * FROM characters WHERE world_id=? ORDER BY sort_order", (world["id"],)
             )]
+            player_row = connection.execute(
+                """SELECT f.*,l.name AS player_location_name
+                   FROM world_flow_states f LEFT JOIN locations l ON l.id=f.player_location_id
+                   WHERE f.world_id=?""",
+                (world["id"],),
+            ).fetchone()
+            commitments = connection.execute(
+                """SELECT pc.id,pc.character_id,pc.text,c.name AS character_name
+                   FROM player_commitments pc LEFT JOIN characters c ON c.id=pc.character_id
+                   WHERE pc.world_id=? AND (pc.character_id=? OR pc.character_id IS NULL)
+                   ORDER BY pc.created_at""",
+                (world["id"], character["id"]),
+            ).fetchall()
+            world_state = connection.execute(
+                "SELECT * FROM character_world_states WHERE character_id=?",
+                (character["id"],),
+            ).fetchone()
         return {
             "conversation": dict(conversation), "world": world, "character": character,
-            "scene": scene, "messages": messages, "public_events": public_events,
-            "knowledge": knowledge, "relationships": relationships,
-            "locations": locations, "characters": characters,
+            "scene": scene, "messages": messages, "public_events": [knowledge_projection(item) for item in public_events],
+            "knowledge": [knowledge_projection(item) for item in knowledge], "relationships": relationships,
+            "locations": locations, "characters": [public_identity(item) for item in characters],
+            "player": player_observation(self._player_state(player_row, list(commitments)), [item["name"] for item in characters]),
+            "pulse": {
+                "number": int(player_row["pulse_number"] if player_row else 0),
+                "narration": player_row["pulse_narration"] if player_row else "",
+            },
+            "character_world_state": dict(world_state) if world_state else {},
         }
 
+    @staticmethod
+    def _apply_player_patch(
+        connection: sqlite3.Connection,
+        *,
+        world_id: str,
+        character_id: str,
+        scene_location_id: str | None,
+        patch: dict[str, Any],
+        updated_at: str,
+    ) -> None:
+        connection.execute(
+            """INSERT OR IGNORE INTO world_flow_states(
+                   world_id,player_location_id,player_condition,visible_traces,
+                   pulse_narration,pulse_number,updated_at)
+               VALUES (?,NULL,'','[]','',0,?)""",
+            (world_id, updated_at),
+        )
+        player_patch = patch.get("player") if isinstance(patch.get("player"), dict) else {}
+        location_id = player_patch.get("location_id")
+        if location_id and not connection.execute(
+            "SELECT 1 FROM locations WHERE id=? AND world_id=?",
+            (location_id, world_id),
+        ).fetchone():
+            location_id = None
+        if not location_id and player_patch.get("location"):
+            found = connection.execute(
+                "SELECT id FROM locations WHERE world_id=? AND name=?",
+                (world_id, str(player_patch["location"]).strip()),
+            ).fetchone()
+            location_id = found["id"] if found else None
+        current = connection.execute(
+            "SELECT * FROM world_flow_states WHERE world_id=?", (world_id,)
+        ).fetchone()
+        effective_location = location_id or scene_location_id or current["player_location_id"]
+        condition = (
+            str(player_patch.get("condition") or "").strip()
+            if "condition" in player_patch else current["player_condition"]
+        )
+        traces = (
+            [str(item).strip() for item in player_patch.get("visible_traces", []) if str(item).strip()][:8]
+            if isinstance(player_patch.get("visible_traces"), list)
+            else _loads(current["visible_traces"], [])
+        )
+        connection.execute(
+            """UPDATE world_flow_states
+               SET player_location_id=?,player_condition=?,visible_traces=?,updated_at=?
+               WHERE world_id=?""",
+            (effective_location, condition, _json(traces), updated_at, world_id),
+        )
+        if isinstance(player_patch.get("commitments"), list):
+            promises = list(dict.fromkeys(
+                str(item).strip()[:160] for item in player_patch["commitments"] if str(item).strip()
+            ))
+            existing = {row["text"]: row["id"] for row in connection.execute(
+                "SELECT id,text FROM player_commitments WHERE world_id=? AND character_id=?",
+                (world_id, character_id),
+            )}
+            for text, commitment_id in existing.items():
+                if text not in promises:
+                    connection.execute("DELETE FROM player_commitments WHERE id=?", (commitment_id,))
+            for text in promises:
+                if text not in existing:
+                    connection.execute(
+                        "INSERT INTO player_commitments VALUES (?,?,?,?,?)",
+                        (uid("promise"), world_id, character_id, text, updated_at),
+                    )
+        connection.execute(
+            """UPDATE character_world_states
+               SET surface_state=CASE WHEN ?!='' THEN ? ELSE surface_state END,
+                   encounter_hook=CASE WHEN ?!='' THEN ? ELSE encounter_hook END,
+                   availability='present',interacted_since_pulse=1,updated_at=?
+               WHERE character_id=?""",
+            (
+                str((patch.get("scene") or {}).get("emotional_state") or "").strip(),
+                str((patch.get("scene") or {}).get("emotional_state") or "").strip(),
+                str((patch.get("scene") or {}).get("physical_state") or "").strip(),
+                str((patch.get("scene") or {}).get("physical_state") or "").strip(),
+                updated_at, character_id,
+            ),
+        )
+
+    def enter_room(self, room_id: str) -> dict[str, Any]:
+        entered_at = now()
+        current = self.get_room(room_id)
+        world_id = current["world"]["id"]
+        if self.pending_settlements(world_id) or world_id in self._active_worlds:
+            return current
+        with self.transaction() as connection:
+            room = connection.execute(
+                "SELECT world_id,location_id FROM scene_rooms WHERE id=?", (room_id,)
+            ).fetchone()
+            if not room:
+                raise KeyError("room_not_found")
+            connection.execute(
+                """INSERT INTO world_flow_states(
+                       world_id,player_location_id,player_condition,visible_traces,
+                       pulse_narration,pulse_number,updated_at)
+                   VALUES (?,?,'','[]','',0,?)
+                   ON CONFLICT(world_id) DO UPDATE SET
+                       player_location_id=excluded.player_location_id,
+                       updated_at=excluded.updated_at""",
+                (room["world_id"], room["location_id"], entered_at),
+            )
+        return self.get_room(room_id)
+
     def apply_world_patch(
-        self, conversation_id: str, source_message_id: str, patch: dict[str, Any]
+        self, conversation_id: str, source_message_id: str, patch: dict[str, Any],
+        *, context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        context = context or self.context_for_turn(conversation_id)
         created = now()
         with self.transaction() as connection:
             conversation = connection.execute(
@@ -1032,11 +1892,17 @@ class Store:
             if not conversation:
                 raise KeyError("conversation_not_found")
             message = connection.execute(
-                "SELECT role FROM messages WHERE id=? AND conversation_id=?",
+                "SELECT role,content,status FROM messages WHERE id=? AND conversation_id=?",
                 (source_message_id, conversation_id),
             ).fetchone()
             if not message or message["role"] != "assistant":
                 raise ValueError("invalid_patch_source")
+            if message["status"] != "complete":
+                raise ValueError("invalid_patch_source")
+            existing = self._existing_patch_result(connection, source_message_id)
+            if existing:
+                return existing
+            patch = validate_patch(patch, context, message["content"])
             character_id = conversation["character_id"]
             scene_patch = patch.get("scene") or {}
             if scene_patch:
@@ -1052,7 +1918,10 @@ class Store:
                 ).fetchone()
                 threads = scene_patch.get("active_threads")
                 effective_location = location_id or (current["location_id"] if current else None)
-                effective_time = scene_patch.get("world_time") or (current["world_time"] if current else "")
+                effective_time = _sanitize_world_time(
+                    scene_patch.get("world_time"),
+                    (current["world_time"] if current else ""),
+                ) or (current["world_time"] if current else "")
                 connection.execute(
                     """INSERT INTO scene_states(conversation_id,location_id,world_time,tension,
                               active_threads,physical_state,emotional_state,updated_at)
@@ -1093,10 +1962,10 @@ class Store:
                 ).fetchone()
                 location_id = state["location_id"] if state else None
                 event_world_time = (
-                    str(event.get("world_time") or "").strip()
-                    or str(scene_patch.get("world_time") or "").strip()
+                    _sanitize_world_time(event.get("world_time"))
+                    or _sanitize_world_time(scene_patch.get("world_time"))
                     or connection.execute(
-                        "SELECT current_time FROM worlds WHERE id=?",
+                        "SELECT worlds.current_time FROM worlds WHERE id=?",
                         (conversation["world_id"],),
                     ).fetchone()[0]
                 )
@@ -1134,13 +2003,14 @@ class Store:
                     if not knowledge_character_id:
                         continue
                     belief = str(beliefs.get(name, ""))
-                    knowledge_state = "misunderstood" if belief else "witnessed"
+                    source = event["knowledge_sources"][name]
+                    knowledge_state = "misunderstood" if belief else ("heard" if source["kind"] == "told" else "witnessed")
                     connection.execute(
                         """INSERT OR REPLACE INTO character_knowledge
                            VALUES (?,?,?,?,?,?,?,?)""",
                         (
                             uid("know"), event_id, knowledge_character_id, knowledge_state,
-                            belief, 0.7 if belief else 1.0, "亲历", created,
+                            belief, 0.7 if belief else 1.0, _json(source), created,
                         ),
                     )
                 record = {
@@ -1168,10 +2038,31 @@ class Store:
                             relationship.get("note") or row["notes"], created, row["id"],
                         ),
                     )
+            scene_location = connection.execute(
+                "SELECT location_id FROM scene_states WHERE conversation_id=?",
+                (conversation_id,),
+            ).fetchone()
+            self._apply_player_patch(
+                connection,
+                world_id=conversation["world_id"],
+                character_id=character_id,
+                scene_location_id=scene_location["location_id"] if scene_location else None,
+                patch=patch,
+                updated_at=created,
+            )
+            settlement = self._insert_turn_settlement(
+                connection,
+                world_id=conversation["world_id"],
+                conversation_id=conversation_id,
+                source_message_id=source_message_id,
+                event_id=event_id,
+                patch=patch,
+                created_at=created,
+            )
             connection.execute(
                 "UPDATE worlds SET updated_at=? WHERE id=?", (created, conversation["world_id"])
             )
-        return {"event_id": event_id, "record": record}
+        return {"event_id": event_id, "record": record, "settlement": settlement}
 
     def cognition_sync_context(self, world_id: str) -> dict[str, Any]:
         with self.read() as connection:
@@ -1179,6 +2070,22 @@ class Store:
             if not world_row:
                 raise KeyError("world_not_found")
             world = dict(world_row)
+            locations = [dict(row) for row in connection.execute(
+                "SELECT * FROM locations WHERE world_id=? ORDER BY sort_order", (world_id,)
+            )]
+            player_row = connection.execute(
+                """SELECT f.*,l.name AS player_location_name
+                   FROM world_flow_states f LEFT JOIN locations l ON l.id=f.player_location_id
+                   WHERE f.world_id=?""",
+                (world_id,),
+            ).fetchone()
+            all_commitments = connection.execute(
+                """SELECT pc.id,pc.character_id,pc.text,c.name AS character_name
+                   FROM player_commitments pc LEFT JOIN characters c ON c.id=pc.character_id
+                   WHERE pc.world_id=? ORDER BY pc.created_at""",
+                (world_id,),
+            ).fetchall()
+            player = self._player_state(player_row, list(all_commitments))
             pending = [dict(row) for row in connection.execute(
                 """SELECT e.*, l.name AS location_name FROM world_events e
                    LEFT JOIN locations l ON l.id=e.location_id
@@ -1196,15 +2103,15 @@ class Store:
                     "SELECT * FROM relationships WHERE from_character_id=? AND to_user=1",
                     (character["id"],),
                 ).fetchone()
-                known_ids = {
-                    item[0] for item in connection.execute(
-                        "SELECT event_id FROM character_knowledge WHERE character_id=?",
+                known = {
+                    item["event_id"]: dict(item) for item in connection.execute(
+                        "SELECT event_id,state AS knowledge_state,belief,source FROM character_knowledge WHERE character_id=?",
                         (character["id"],),
                     )
                 }
                 relevant_pending = [
-                    event for event in pending
-                    if event["visibility"] == "public" or event["id"] in known_ids
+                    knowledge_projection({**event, **known.get(event["id"], {})}) for event in pending
+                    if event["visibility"] == "public" or event["id"] in known
                 ]
                 knowledge = [dict(item) for item in connection.execute(
                     """SELECT e.title,e.details,e.world_time,e.visibility,k.state,k.belief,k.source
@@ -1212,13 +2119,25 @@ class Store:
                        WHERE k.character_id=? ORDER BY e.created_at DESC LIMIT 30""",
                     (character["id"],),
                 )]
+                world_state = connection.execute(
+                    "SELECT * FROM character_world_states WHERE character_id=?",
+                    (character["id"],),
+                ).fetchone()
                 characters.append({
                     "character": character,
                     "relationship": dict(relationship) if relationship else {},
                     "new_events": relevant_pending,
-                    "knowledge": knowledge,
+                    "knowledge": [knowledge_projection(item) for item in knowledge],
+                    "commitments": [
+                        dict(item) for item in all_commitments
+                        if item["character_id"] in {None, character["id"]}
+                    ],
+                    "world_state": dict(world_state) if world_state else {},
                 })
-        return {"world": world, "pending_events": pending, "characters": characters}
+        return {
+            "world": world, "pending_events": pending, "characters": characters,
+            "locations": locations, "player": player,
+        }
 
     def commit_cognition_sync(
         self, world_id: str, event_ids: list[str], summaries: dict[str, str]
@@ -1273,6 +2192,161 @@ class Store:
         return {
             "synced_events": len(actual_event_ids),
             "updated_characters": updated_characters,
+        }
+
+    def commit_world_pulse(
+        self,
+        world_id: str,
+        event_ids: list[str],
+        actions: dict[str, dict[str, Any]],
+        transition: dict[str, Any],
+    ) -> dict[str, Any]:
+        updated_at = now()
+        with self.transaction() as connection:
+            world_row = connection.execute(
+                "SELECT worlds.current_time FROM worlds WHERE id=?", (world_id,)
+            ).fetchone()
+            if not world_row:
+                raise KeyError("world_not_found")
+            next_time = _sanitize_world_time(transition.get("world_time"))
+            if not next_time or next_time == world_row["current_time"]:
+                raise ValueError("世界时间没有向前，请重新选择时刻")
+            events: list[sqlite3.Row] = []
+            if event_ids:
+                marks = ",".join("?" for _ in event_ids)
+                events = connection.execute(
+                    f"""SELECT * FROM world_events
+                        WHERE world_id=? AND id IN ({marks}) AND cognition_synced=0""",
+                    (world_id, *event_ids),
+                ).fetchall()
+            characters = connection.execute(
+                "SELECT id FROM characters WHERE world_id=?", (world_id,)
+            ).fetchall()
+            for event in events:
+                if event["visibility"] != "public":
+                    continue
+                for character in characters:
+                    if connection.execute(
+                        "SELECT 1 FROM character_knowledge WHERE event_id=? AND character_id=?",
+                        (event["id"], character["id"]),
+                    ).fetchone():
+                        continue
+                    connection.execute(
+                        "INSERT INTO character_knowledge VALUES (?,?,?,?,?,?,?,?)",
+                        (
+                            uid("know"), event["id"], character["id"], "heard", "",
+                            0.85, "世界公开变化", updated_at,
+                        ),
+                    )
+            current_pulse = connection.execute(
+                "SELECT pulse_number FROM world_flow_states WHERE world_id=?", (world_id,)
+            ).fetchone()
+            pulse_number = (current_pulse["pulse_number"] if current_pulse else 0) + 1
+            updated_characters: list[str] = []
+            for character_id, action in actions.items():
+                if not connection.execute(
+                    "SELECT 1 FROM characters WHERE id=? AND world_id=?",
+                    (character_id, world_id),
+                ).fetchone():
+                    continue
+                location_id = action.get("location_id")
+                if location_id and connection.execute(
+                    "SELECT 1 FROM locations WHERE id=? AND world_id=?",
+                    (location_id, world_id),
+                ).fetchone():
+                    connection.execute(
+                        "UPDATE characters SET current_location_id=? WHERE id=?",
+                        (location_id, character_id),
+                    )
+                summary = str(action.get("surface_state") or "").strip()
+                if summary:
+                    connection.execute(
+                        """UPDATE characters SET state_summary=?,summary_updated_at=?,updated_at=?
+                           WHERE id=?""",
+                        (summary[:160], updated_at, updated_at, character_id),
+                    )
+                availability = action.get("availability")
+                if availability not in {"present", "reachable", "incoming", "unavailable"}:
+                    availability = "reachable"
+                connection.execute(
+                    """INSERT INTO character_world_states(
+                           character_id,intention,surface_state,encounter_hook,availability,
+                           pulse_number,interacted_since_pulse,updated_at)
+                       VALUES (?,?,?,?,?,?,0,?)
+                       ON CONFLICT(character_id) DO UPDATE SET
+                           intention=excluded.intention,
+                           surface_state=excluded.surface_state,
+                           encounter_hook=excluded.encounter_hook,
+                           availability=excluded.availability,
+                           pulse_number=excluded.pulse_number,
+                           interacted_since_pulse=0,
+                           updated_at=excluded.updated_at""",
+                    (
+                        character_id, str(action.get("intention") or "")[:240], summary[:160],
+                        str(action.get("encounter_hook") or "")[:240], availability,
+                        pulse_number, updated_at,
+                    ),
+                )
+                updated_characters.append(character_id)
+            actual_event_ids = [event["id"] for event in events]
+            if actual_event_ids:
+                actual_marks = ",".join("?" for _ in actual_event_ids)
+                connection.execute(
+                    f"UPDATE world_events SET cognition_synced=1 WHERE id IN ({actual_marks})",
+                    actual_event_ids,
+                )
+            next_time = _sanitize_world_time(transition.get("world_time"))
+            if next_time:
+                connection.execute(
+                    "UPDATE worlds SET current_time=?,updated_at=? WHERE id=?",
+                    (next_time[:120], updated_at, world_id),
+                )
+                connection.execute(
+                    """UPDATE scene_states SET world_time=?,updated_at=?
+                       WHERE conversation_id IN (
+                           SELECT id FROM conversations WHERE world_id=?
+                       )""",
+                    (next_time[:120], updated_at, world_id),
+                )
+                connection.execute(
+                    "UPDATE scene_rooms SET world_time=?,updated_at=? WHERE world_id=?",
+                    (next_time[:120], updated_at, world_id),
+                )
+            flow = connection.execute(
+                "SELECT * FROM world_flow_states WHERE world_id=?", (world_id,)
+            ).fetchone()
+            traces = transition.get("visible_traces")
+            if not isinstance(traces, list):
+                traces = _loads(flow["visible_traces"], []) if flow else []
+            condition = (
+                str(transition.get("player_condition") or "").strip()
+                if "player_condition" in transition
+                else (flow["player_condition"] if flow else "")
+            )
+            connection.execute(
+                """INSERT INTO world_flow_states(
+                       world_id,player_location_id,player_condition,visible_traces,
+                       pulse_narration,pulse_number,updated_at)
+                   VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT(world_id) DO UPDATE SET
+                       player_condition=excluded.player_condition,
+                       visible_traces=excluded.visible_traces,
+                       pulse_narration=excluded.pulse_narration,
+                       pulse_number=excluded.pulse_number,
+                       updated_at=excluded.updated_at""",
+                (
+                    world_id, flow["player_location_id"] if flow else None,
+                    condition[:200], _json([str(item)[:160] for item in traces[:8]]),
+                    str(transition.get("narration") or "")[:800], pulse_number, updated_at,
+                ),
+            )
+            connection.execute(
+                "UPDATE worlds SET updated_at=? WHERE id=?", (updated_at, world_id)
+            )
+        return {
+            "synced_events": len(actual_event_ids),
+            "updated_characters": updated_characters,
+            "pulse_number": pulse_number,
         }
 
     def active_provider(self) -> dict[str, Any]:
@@ -1342,10 +2416,23 @@ class Store:
                     "SELECT id FROM characters WHERE world_id=?", (world_id,)
                 )
             }
-            members = [cid for cid in character_ids if cid in valid]
+            members = list(dict.fromkeys(character_ids))
+            if not members:
+                raise ValueError("room_members_required")
+            if any(character_id not in valid for character_id in members):
+                raise ValueError("invalid_room_member")
+            world_time = connection.execute(
+                "SELECT worlds.current_time FROM worlds WHERE id=?", (world_id,)
+            ).fetchone()[0]
             connection.execute(
-                "INSERT INTO scene_rooms VALUES (?,?,?,?,?,?)",
-                (room_id, world_id, (name or "同场").strip(), location_id, created, created),
+                """INSERT INTO scene_rooms(
+                       id,world_id,name,location_id,world_time,tension,active_threads,
+                       physical_state,emotional_state,created_at,updated_at)
+                   VALUES (?,?,?,?,?,0,'[]','','',?,?)""",
+                (
+                    room_id, world_id, (name or "同场").strip(), location_id,
+                    world_time, created, created,
+                ),
             )
             for order, character_id in enumerate(members):
                 connection.execute(
@@ -1380,13 +2467,66 @@ class Store:
                    FROM room_messages m LEFT JOIN characters c ON c.id=m.character_id
                    WHERE m.room_id=? ORDER BY m.sequence""", (room_id,)
             )]
+            records = [dict(row) for row in connection.execute(
+                """SELECT e.*, s.room_message_id AS source_room_message_id,
+                          l.name AS location_name
+                   FROM room_event_sources s JOIN world_events e ON e.id=s.event_id
+                   LEFT JOIN locations l ON l.id=e.location_id
+                   WHERE s.room_id=? ORDER BY e.created_at""",
+                (room_id,),
+            )]
+            settlements = [self._settlement(row) for row in connection.execute(
+                """SELECT * FROM turn_settlements
+                   WHERE room_id=? ORDER BY created_at, id""",
+                (room_id,),
+            )]
+            settlement_by_message = {
+                item["source_room_message_id"]: item for item in settlements
+            }
+            jobs = {row["source_id"]: dict(row) for row in connection.execute(
+                "SELECT source_id,status,reason FROM settlement_jobs WHERE world_id=? AND status!='complete'",
+                (room["world_id"],),
+            )}
+            for message in messages:
+                if message["id"] in jobs:
+                    message["settlement_job"] = jobs[message["id"]]
+                settlement = settlement_by_message.get(message["id"])
+                if settlement:
+                    message["settlement"] = settlement
+            player_row = connection.execute(
+                """SELECT f.*,l.name AS player_location_name
+                   FROM world_flow_states f LEFT JOIN locations l ON l.id=f.player_location_id
+                   WHERE f.world_id=?""",
+                (room["world_id"],),
+            ).fetchone()
+            commitments = connection.execute(
+                """SELECT pc.id,pc.character_id,pc.text,c.name AS character_name
+                   FROM player_commitments pc LEFT JOIN characters c ON c.id=pc.character_id
+                   WHERE pc.world_id=? ORDER BY pc.created_at""",
+                (room["world_id"],),
+            ).fetchall()
+        room_data = dict(room)
+        room_data["active_threads"] = _loads(room_data.get("active_threads"), [])
+        scene = {
+            "location_id": room_data.get("location_id"),
+            "location_name": (location or {}).get("name"),
+            "world_time": room_data.get("world_time") or world.get("current_time") or "",
+            "tension": room_data.get("tension", 0),
+            "active_threads": room_data.get("active_threads", []),
+            "physical_state": room_data.get("physical_state", ""),
+            "emotional_state": room_data.get("emotional_state", ""),
+        }
         return {
-            "room": dict(room), "world": world, "location": location,
-            "characters": characters, "messages": messages,
+            "room": room_data, "world": world, "location": location,
+            "scene": scene, "characters": characters, "messages": messages,
+            "records": records, "settlements": settlements,
+            "pending_settlements": self.pending_settlements(room["world_id"]),
+            "player": self._player_state(player_row, list(commitments)),
         }
 
     def add_room_message(
-        self, room_id: str, role: str, character_id: str | None, content: str
+        self, room_id: str, role: str, character_id: str | None, content: str,
+        *, settlement_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         created = now()
         with self.transaction() as connection:
@@ -1401,6 +2541,10 @@ class Store:
                 "INSERT INTO room_messages VALUES (?,?,?,?,?,?,?,?)",
                 (message_id, room_id, role, character_id, content, sequence, created, created),
             )
+            if settlement_context is not None:
+                if role != "assistant" or not content.strip():
+                    raise ValueError("invalid_settlement_message")
+                self._enqueue_settlement(connection, message_id, settlement_context)
             connection.execute(
                 "UPDATE scene_rooms SET updated_at=? WHERE id=?", (created, room_id)
             )
@@ -1420,35 +2564,46 @@ class Store:
             world = dict(connection.execute(
                 "SELECT * FROM worlds WHERE id=?", (room["world_id"],)
             ).fetchone())
-            character = self._character(connection.execute(
+            character_row = connection.execute(
                 """SELECT c.*, l.name AS location_name, l.description AS location_description
-                   FROM characters c LEFT JOIN locations l ON l.id=c.current_location_id
-                   WHERE c.id=?""", (character_id,)
-            ).fetchone())
-            if not character:
+                   FROM room_characters rc JOIN characters c ON c.id=rc.character_id
+                   LEFT JOIN locations l ON l.id=c.current_location_id
+                   WHERE rc.room_id=? AND c.id=?""",
+                (room_id, character_id),
+            ).fetchone()
+            if not character_row:
                 raise KeyError("character_not_found")
+            character = self._character(character_row)
             room_location = dict(connection.execute(
                 "SELECT * FROM locations WHERE id=?", (room["location_id"],)
             ).fetchone()) if room["location_id"] else None
             transcript = [dict(row) for row in connection.execute(
-                """SELECT m.*, c.name AS character_name
-                   FROM room_messages m LEFT JOIN characters c ON c.id=m.character_id
-                   WHERE m.room_id=? ORDER BY m.sequence LIMIT 60""", (room_id,)
+                """SELECT * FROM (
+                       SELECT m.*, c.name AS character_name
+                       FROM room_messages m LEFT JOIN characters c ON c.id=m.character_id
+                       WHERE m.room_id=? ORDER BY m.sequence DESC LIMIT 60
+                   ) recent ORDER BY sequence""",
+                (room_id,),
             )]
             public_events = [dict(row) for row in connection.execute(
-                """SELECT e.*, l.name AS location_name FROM character_knowledge k
-                   JOIN world_events e ON e.id=k.event_id
-                   LEFT JOIN locations l ON l.id=e.location_id
-                   WHERE k.character_id=? AND e.world_id=? AND e.visibility='public'
-                   ORDER BY e.created_at LIMIT 80""", (character_id, world["id"])
+                """SELECT * FROM (
+                       SELECT e.*, k.state AS knowledge_state, k.belief, k.source,
+                              l.name AS location_name FROM character_knowledge k
+                       JOIN world_events e ON e.id=k.event_id
+                       LEFT JOIN locations l ON l.id=e.location_id
+                       WHERE k.character_id=? AND e.world_id=? AND e.visibility='public'
+                       ORDER BY e.created_at DESC LIMIT 80
+                   ) recent ORDER BY created_at""", (character_id, world["id"])
             )]
             knowledge = [dict(row) for row in connection.execute(
-                """SELECT e.*, k.state AS knowledge_state, k.belief, k.confidence,
-                          k.source, l.name AS location_name
-                   FROM character_knowledge k JOIN world_events e ON e.id=k.event_id
-                   LEFT JOIN locations l ON l.id=e.location_id
-                   WHERE k.character_id=? AND e.visibility!='public'
-                   ORDER BY e.created_at LIMIT 80""", (character_id,)
+                """SELECT * FROM (
+                       SELECT e.*, k.state AS knowledge_state, k.belief, k.confidence,
+                              k.source, l.name AS location_name
+                       FROM character_knowledge k JOIN world_events e ON e.id=k.event_id
+                       LEFT JOIN locations l ON l.id=e.location_id
+                       WHERE k.character_id=? AND e.visibility!='public'
+                       ORDER BY e.created_at DESC LIMIT 80
+                   ) recent ORDER BY created_at""", (character_id,)
             )]
             relationships = [dict(row) for row in connection.execute(
                 "SELECT * FROM relationships WHERE from_character_id=?", (character_id,)
@@ -1456,29 +2611,55 @@ class Store:
             locations = [dict(row) for row in connection.execute(
                 "SELECT * FROM locations WHERE world_id=? ORDER BY sort_order", (world["id"],)
             )]
-            characters = [self._character(row) for row in connection.execute(
-                "SELECT * FROM characters WHERE world_id=? ORDER BY sort_order", (world["id"],)
+            room_characters = [self._character(row) for row in connection.execute(
+                """SELECT c.* FROM room_characters rc
+                   JOIN characters c ON c.id=rc.character_id
+                   WHERE rc.room_id=? ORDER BY rc.sort_order""",
+                (room_id,),
             )]
+            player_row = connection.execute(
+                """SELECT f.*,l.name AS player_location_name
+                   FROM world_flow_states f LEFT JOIN locations l ON l.id=f.player_location_id
+                   WHERE f.world_id=?""",
+                (world["id"],),
+            ).fetchone()
+            commitments = connection.execute(
+                """SELECT pc.id,pc.character_id,pc.text,c.name AS character_name
+                   FROM player_commitments pc LEFT JOIN characters c ON c.id=pc.character_id
+                   WHERE pc.world_id=? AND (pc.character_id=? OR pc.character_id IS NULL)
+                   ORDER BY pc.created_at""",
+                (world["id"], character_id),
+            ).fetchall()
+            world_state = connection.execute(
+                "SELECT * FROM character_world_states WHERE character_id=?",
+                (character_id,),
+            ).fetchone()
+            world_names = [row["name"] for row in connection.execute("SELECT name FROM characters WHERE world_id=?", (world["id"],))]
         scene = {
             "location_id": (room_location or {}).get("id"),
             "location_name": (room_location or {}).get("name") or character.get("location_name"),
-            "world_time": world.get("current_time") or "",
-            "tension": 0,
-            "active_threads": [],
-            "physical_state": "",
-            "emotional_state": "",
+            "world_time": room["world_time"] or world.get("current_time") or "",
+            "tension": room["tension"],
+            "active_threads": _loads(room["active_threads"], []),
+            "physical_state": room["physical_state"],
+            "emotional_state": room["emotional_state"],
         }
         return {
             "room": dict(room), "world": world, "character": character,
-            "scene": scene, "messages": transcript, "public_events": public_events,
-            "knowledge": knowledge, "relationships": relationships,
-            "locations": locations, "characters": characters,
-            "room_characters": characters,
+            "scene": scene, "messages": transcript, "public_events": [knowledge_projection(item) for item in public_events],
+            "knowledge": [knowledge_projection(item) for item in knowledge], "relationships": relationships,
+            "locations": locations, "characters": [public_identity(item) for item in room_characters],
+            "room_characters": [public_identity(item) for item in room_characters],
+            "player": player_observation(self._player_state(player_row, list(commitments)), world_names),
+            "character_world_state": dict(world_state) if world_state else {},
         }
 
     def apply_room_patch(
-        self, room_id: str, character_id: str, patch: dict[str, Any]
+        self, room_id: str, character_id: str, source_message_id: str,
+        patch: dict[str, Any],
+        *, context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        context = context or self.room_character_context(room_id, character_id)
         created = now()
         with self.transaction() as connection:
             room = connection.execute("SELECT * FROM scene_rooms WHERE id=?", (room_id,)).fetchone()
@@ -1491,9 +2672,65 @@ class Store:
             ).fetchone()
             if not character:
                 raise KeyError("character_not_found")
+            source_message = connection.execute(
+                """SELECT role,character_id,content FROM room_messages
+                   WHERE id=? AND room_id=?""",
+                (source_message_id, room_id),
+            ).fetchone()
+            if (
+                not source_message
+                or source_message["role"] != "assistant"
+                or source_message["character_id"] != character_id
+            ):
+                raise ValueError("invalid_patch_source")
 
+            existing = self._existing_patch_result(connection, source_message_id)
+            if existing:
+                return existing
+            patch = validate_patch(patch, context, source_message["content"])
             scene_patch = patch.get("scene") or {}
-            world_time = str(scene_patch.get("world_time") or "").strip()
+            world_time = _sanitize_world_time(scene_patch.get("world_time"))
+            location_id = room["location_id"]
+            requested_location_id = scene_patch.get("location_id")
+            if requested_location_id:
+                found = connection.execute(
+                    "SELECT id FROM locations WHERE id=? AND world_id=?",
+                    (requested_location_id, world_id),
+                ).fetchone()
+                if found:
+                    location_id = found["id"]
+            elif scene_patch.get("location"):
+                found = connection.execute(
+                    "SELECT id FROM locations WHERE world_id=? AND name=?",
+                    (world_id, scene_patch["location"]),
+                ).fetchone()
+                if found:
+                    location_id = found["id"]
+            threads = scene_patch.get("active_threads")
+            effective_threads = (
+                threads if isinstance(threads, list)
+                else _loads(room["active_threads"], [])
+            )
+            effective_world_time = (
+                world_time or room["world_time"] or connection.execute(
+                    "SELECT worlds.current_time FROM worlds WHERE id=?", (world_id,)
+                ).fetchone()[0]
+            )
+            connection.execute(
+                """UPDATE scene_rooms SET location_id=?,world_time=?,tension=?,
+                          active_threads=?,physical_state=?,emotional_state=?,updated_at=?
+                   WHERE id=?""",
+                (
+                    location_id,
+                    effective_world_time,
+                    max(0, min(100, int(scene_patch.get("tension", room["tension"])))),
+                    _json(effective_threads[:4]),
+                    scene_patch.get("physical_state") or room["physical_state"],
+                    scene_patch.get("emotional_state") or room["emotional_state"],
+                    created,
+                    room_id,
+                ),
+            )
             if world_time:
                 connection.execute(
                     "UPDATE worlds SET current_time=?,updated_at=? WHERE id=?",
@@ -1506,25 +2743,31 @@ class Store:
             if isinstance(event, dict) and event.get("title"):
                 event_id = uid("event")
                 visibility = event.get("visibility") if event.get("visibility") in {"public", "private", "secret"} else "private"
-                location_id = room["location_id"]
                 event_world_time = (
-                    str(event.get("world_time") or "").strip()
-                    or world_time
-                    or connection.execute(
-                        "SELECT current_time FROM worlds WHERE id=?", (world_id,)
-                    ).fetchone()[0]
+                    _sanitize_world_time(event.get("world_time"))
+                    or effective_world_time
                 )
                 connection.execute(
-                    "INSERT INTO world_events VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    """INSERT INTO world_events(
+                           id,world_id,source_conversation_id,source_message_id,title,
+                           details,visibility,location_id,world_time,cognition_synced,created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         event_id, world_id, None, None,
                         str(event["title"])[:80], str(event.get("details", "")), visibility,
                         location_id, event_world_time, 0, created,
                     ),
                 )
+                connection.execute(
+                    "INSERT INTO room_event_sources VALUES (?,?,?)",
+                    (event_id, room_id, source_message_id),
+                )
                 character_by_name = {
                     row["name"]: row["id"] for row in connection.execute(
-                        "SELECT id,name FROM characters WHERE world_id=?", (world_id,)
+                        """SELECT c.id,c.name FROM room_characters rc
+                           JOIN characters c ON c.id=rc.character_id
+                           WHERE rc.room_id=?""",
+                        (room_id,),
                     )
                 }
                 participant_ids = {character_id}
@@ -1544,19 +2787,21 @@ class Store:
                     if not knowledge_character_id:
                         continue
                     belief = str(beliefs.get(name, ""))
-                    knowledge_state = "misunderstood" if belief else "witnessed"
+                    source = event["knowledge_sources"][name]
+                    knowledge_state = "misunderstood" if belief else ("heard" if source["kind"] == "told" else "witnessed")
                     connection.execute(
                         """INSERT OR REPLACE INTO character_knowledge
                            VALUES (?,?,?,?,?,?,?,?)""",
                         (
                             uid("know"), event_id, knowledge_character_id, knowledge_state,
-                            belief, 0.7 if belief else 1.0, "亲历", created,
+                            belief, 0.7 if belief else 1.0, _json(source), created,
                         ),
                     )
                 record = {
                     "id": event_id, "title": str(event["title"])[:80],
                     "details": str(event.get("details", "")), "visibility": visibility,
                     "world_time": event_world_time, "cognition_synced": 0,
+                    "source_room_message_id": source_message_id,
                 }
 
             relationship = patch.get("relationship") or {}
@@ -1577,10 +2822,24 @@ class Store:
                             relationship.get("note") or row["notes"], created, row["id"],
                         ),
                     )
-            connection.execute(
-                "UPDATE scene_rooms SET updated_at=? WHERE id=?", (created, room_id)
+            self._apply_player_patch(
+                connection,
+                world_id=world_id,
+                character_id=character_id,
+                scene_location_id=location_id,
+                patch=patch,
+                updated_at=created,
+            )
+            settlement = self._insert_turn_settlement(
+                connection,
+                world_id=world_id,
+                room_id=room_id,
+                source_room_message_id=source_message_id,
+                event_id=event_id,
+                patch=patch,
+                created_at=created,
             )
             connection.execute(
                 "UPDATE worlds SET updated_at=? WHERE id=?", (created, world_id)
             )
-        return {"event_id": event_id, "record": record}
+        return {"event_id": event_id, "record": record, "settlement": settlement}

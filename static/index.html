@@ -4,10 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>共界</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <meta name="theme-color" content="#f3f0e7">
+  <link rel="stylesheet" href="/static/styles.css?v=13">
 </head>
 <body>
   <div class="grain"></div>
+  <div class="worldstream" aria-hidden="true">
+    <i class="stream-orb orb-one"></i>
+    <i class="stream-orb orb-two"></i>
+    <i class="stream-orb orb-three"></i>
+    <span class="stream-thread thread-one"></span>
+    <span class="stream-thread thread-two"></span>
+    <span class="stream-sigil"><i></i><i></i><i></i></span>
+  </div>
 
   <section id="library-screen" class="library-screen">
     <header class="library-header">
@@ -21,8 +30,11 @@
     </header>
     <main class="library-main">
       <div class="library-intro">
-        <span class="stage-eyebrow">WORLDS</span>
-        <h1>去往哪个世界</h1>
+        <div>
+          <span class="stage-eyebrow">BOUNDLESS WORLDS</span>
+          <h1>去往哪个世界</h1>
+        </div>
+        <div class="library-portal" aria-hidden="true"><i></i><i></i><i></i><span>∞</span></div>
       </div>
       <div id="world-library-grid" class="world-library-grid"></div>
     </main>
@@ -55,6 +67,8 @@
           <h1 id="stage-title">—</h1>
         </div>
         <div class="header-actions">
+          <span id="activity-status" class="activity-status" role="status" aria-live="polite"></span>
+          <button class="inspector-toggle" data-action="toggle-inspector" aria-expanded="false" aria-controls="inspector">世界书</button>
           <span id="world-clock" class="world-clock">—</span>
           <button class="soft-button" data-action="library">世界书架</button>
         </div>
@@ -65,14 +79,15 @@
       <section id="room-view" class="view chat-view"></section>
     </main>
 
+    <button id="inspector-scrim" class="inspector-scrim" data-action="close-inspector" aria-label="关闭视角" tabindex="-1"></button>
     <aside id="inspector" class="inspector"></aside>
   </div>
 
-  <dialog id="provider-dialog" class="dialog">
+  <dialog aria-label="让世界开口" id="provider-dialog" class="dialog">
     <form id="provider-form" method="dialog">
       <div class="dialog-head">
         <div><span class="stage-eyebrow">模型连接</span><h2>让世界开口</h2></div>
-        <button type="button" class="close-button" data-action="close-settings">×</button>
+        <button type="button" class="close-button" aria-label="关闭" data-action="close-settings">×</button>
       </div>
       <label>协议
         <select name="protocol" id="provider-protocol">
@@ -98,11 +113,11 @@
     </form>
   </dialog>
 
-  <dialog id="world-dialog" class="dialog editor-dialog">
+  <dialog aria-label="世界底稿" id="world-dialog" class="dialog editor-dialog">
     <form id="world-form" method="dialog">
       <div class="dialog-head">
         <div><span class="stage-eyebrow">WORLD BOOK</span><h2 id="world-dialog-title">世界底稿</h2></div>
-        <button type="button" class="close-button" data-action="close-world-editor">×</button>
+        <button type="button" class="close-button" aria-label="关闭" data-action="close-world-editor">×</button>
       </div>
       <section id="world-template-picker" class="template-picker">
         <button type="button" class="template-option active" data-template="">
@@ -133,11 +148,11 @@
     </form>
   </dialog>
 
-  <dialog id="character-dialog" class="dialog editor-dialog">
+  <dialog aria-label="人物底色" id="character-dialog" class="dialog editor-dialog">
     <form id="character-form" method="dialog">
       <div class="dialog-head">
         <div><span class="stage-eyebrow">CHARACTER</span><h2 id="character-dialog-title">人物底色</h2></div>
-        <button type="button" class="close-button" data-action="close-character-editor">×</button>
+        <button type="button" class="close-button" aria-label="关闭" data-action="close-character-editor">×</button>
       </div>
       <div class="form-row compact"><label>名字<input name="name" required maxlength="60"></label><label>年龄<input name="age" type="number" min="18" max="999" required></label></div>
       <div class="form-row compact"><label>身份<input name="role"></label><label>所在地点<select name="current_location_id"></select></label></div>
@@ -148,11 +163,11 @@
       <label>标志性行为<textarea name="signature_behaviors" rows="3" placeholder="一行一个"></textarea></label>
       <label>失控方式<textarea name="loss_of_control" rows="3"></textarea></label>
       <div class="desire-editor">
-        <label>掌控<input name="control" type="number" min="0" max="100"></label>
-        <label>投入<input name="devotion" type="number" min="0" max="100"></label>
-        <label>嫉妒<input name="jealousy" type="number" min="0" max="100"></label>
-        <label>冒险<input name="risk" type="number" min="0" max="100"></label>
-        <label>温柔<input name="tenderness" type="number" min="0" max="100"></label>
+        <label>掌控<input name="control" type="range" min="0" max="100" step="1"><span class="desire-hint"></span></label>
+        <label>投入<input name="devotion" type="range" min="0" max="100" step="1"><span class="desire-hint"></span></label>
+        <label>嫉妒<input name="jealousy" type="range" min="0" max="100" step="1"><span class="desire-hint"></span></label>
+        <label>冒险<input name="risk" type="range" min="0" max="100" step="1"><span class="desire-hint"></span></label>
+        <label>温柔<input name="tenderness" type="range" min="0" max="100" step="1"><span class="desire-hint"></span></label>
       </div>
       <label>颜色<input name="accent" type="color"></label>
       <input name="pronouns" type="hidden" value="">
@@ -160,20 +175,41 @@
     </form>
   </dialog>
 
-  <dialog id="room-dialog" class="dialog editor-dialog">
+  <dialog aria-label="开启一场相遇" id="room-dialog" class="dialog editor-dialog">
     <form id="room-form" method="dialog">
       <div class="dialog-head">
-        <div><span class="stage-eyebrow">SAME SCENE</span><h2>开一个同场房间</h2></div>
-        <button type="button" class="close-button" data-action="close-room-dialog">×</button>
+        <div><span class="stage-eyebrow">SAME SCENE</span><h2>开启一场相遇</h2></div>
+        <button type="button" class="close-button" aria-label="关闭" data-action="close-room-dialog">×</button>
       </div>
       <label>房间名字<input name="name" maxlength="60" placeholder="例如：三姐妹夜谈"></label>
       <label>场景地点<select name="location_id"><option value="">未定</option></select></label>
-      <label>拉谁入局（可多选）<div id="room-character-picker" class="room-character-picker"></div></label>
-      <div class="dialog-actions"><button type="submit" class="primary-button">开群</button></div>
+      <fieldset><legend>在场的人</legend><div id="room-character-picker" class="room-character-picker"></div></fieldset>
+      <div class="dialog-actions"><button type="submit" class="primary-button">开启同场</button></div>
     </form>
   </dialog>
 
-  <div id="toast" class="toast"></div>
-  <script src="/static/app.js"></script>
+  <dialog aria-label="让这个世界重新开始" id="reset-world-dialog" class="dialog reset-dialog">
+    <form id="reset-world-form" method="dialog">
+      <div class="dialog-head">
+        <div><span class="stage-eyebrow">RETURN TO ORIGIN</span><h2>让这个世界重新开始</h2></div>
+        <button type="button" class="close-button" aria-label="关闭" data-action="close-reset-world">×</button>
+      </div>
+      <div class="reset-warning">
+        <div class="reset-rings" aria-hidden="true"><i></i><i></i><i></i></div>
+        <p>所有对话、同场房间、世界事实、角色认知与关系进展都会消失。世界书、地点和人物仍会留下。</p>
+      </div>
+      <label>输入世界名 <strong id="reset-world-name">—</strong> 确认
+        <input name="confirmation" autocomplete="off" spellcheck="false">
+      </label>
+      <div id="reset-world-feedback" class="form-feedback"></div>
+      <div class="dialog-actions">
+        <button type="button" class="soft-button" data-action="close-reset-world">取消</button>
+        <button type="submit" id="confirm-reset-world" class="danger-button" disabled>重置世界</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js?v=13"></script>
 </body>
 </html>

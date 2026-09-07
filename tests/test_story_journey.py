@@ -1,0 +1,147 @@
+from __future__ import annotations
+
+import json
+import asyncio
+import tempfile
+import unittest
+from pathlib import Path
+
+from gongjie.cognition.compiler import opening_request_context
+from gongjie.cognition.pulse import advance_world_pulse, character_pulse_context, transition_context
+from gongjie.ai.providers import OpenAICompatibleAdapter, RequestContext, ReplySnapshot
+from gongjie.storage.store import Store
+from gongjie.domain.patches import validate_patch
+
+
+class StoryJourneyTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.temp.name) / 'world.db')
+        self.store.initialize()
+        self.world = 'world_velvet_harbor'
+        self.conv = self.store.get_or_create_conversation(self.world, 'char_shenyan')
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def settle(self, user, reply, player):
+        self.store.add_message(self.conv, 'user', user)
+        message = self.store.add_message(self.conv, 'assistant', reply)
+        return self.store.apply_world_patch(self.conv, message['id'], {
+            'event': None, 'player': player,
+            'evidence': {'player.commitments': {'role': 'user', 'quote': user, 'kind': 'expressed'}},
+        })
+
+    def test_promise_survives_other_meetings_and_reentry_until_fulfilled(self):
+        self.store.add_opening_message(self.conv, '沈砚站在窗边。')
+        promise = '明天清晨回夜航公馆见沈砚'
+        self.settle('我答应，' + promise, '沈砚答应等到清晨。', {'commitments': [promise]})
+        original = self.store.get_world(self.world)['player']['commitments'][0]
+        self.settle('那么明天见。', '沈砚点了点头。', {'commitments': [promise]})
+        self.assertEqual(self.store.get_world(self.world)['player']['commitments'][0]['id'], original['id'])
+        other = self.store.get_or_create_conversation(self.world, 'char_linzhao')
+        self.assertFalse(self.store.context_for_turn(other)['player']['commitments'])
+        self.store.commit_world_pulse(self.world, [], {}, {'world_time': '次日清晨', 'narration': '晨雾渐散。'})
+        self.store.get_or_create_conversation(self.world, 'char_shenyan')
+        self.assertEqual(len(self.store.context_for_turn(self.conv)['player']['commitments']), 1)
+        self.store.add_opening_message(self.conv, '沈砚仍在窗边等候。')
+        again, created = self.store.add_opening_message(self.conv, '这句不应重复保存。')
+        self.assertFalse(created)
+        history = self.store.get_conversation(self.conv)
+        self.assertEqual(history['messages'][-1]['scene_entry']['entry_kind'], 'reentry')
+        self.settle('我按约回到夜航公馆来见你了。', '沈砚点头：“你来了。”', {'commitments': []})
+        self.assertFalse(self.store.get_world(self.world)['player']['commitments'])
+        self.assertEqual(len(self.store.get_conversation(self.conv)['settlements']), 3)
+
+    def test_later_meetings_keep_identity_without_replaying_the_original_night(self):
+        before = self.store.context_for_turn(self.conv)
+        self.store.add_opening_message(self.conv, '沈砚望向窗外。')
+        self.store.commit_world_pulse(self.world, [], {}, {'world_time': '次日清晨', 'narration': '天亮了。'})
+        context = self.store.context_for_turn(self.conv)
+        request = opening_request_context(context, {'max_tokens': 4096}, reentry=True)
+        for key in ('persona', 'speech_style', 'loss_of_control'):
+            self.assertIn(context['character'][key], request.system)
+        self.assertIn(json.dumps(context['character']['desire_profile'], ensure_ascii=False), request.system)
+        other = self.store.get_or_create_conversation(self.world, 'char_linzhao')
+        new_context = self.store.context_for_turn(other)
+        first = opening_request_context(new_context, {'max_tokens': 4096})
+        self.assertNotIn(before['world']['opening_narration'], first.system)
+        self.assertNotIn(new_context['character']['opening_hook'], first.system)
+        self.assertIn('次日清晨', first.system)
+
+    def test_absent_characters_cannot_observe_player_or_others_promises(self):
+        self.settle('我答应明日回来。', '沈砚点头。', {'commitments': ['秘密约定青鹭17'], 'condition': '袖口带着独有蓝漆', 'visible_traces': ['掌心留着蓝色痕迹']})
+        context = self.store.cognition_sync_context(self.world)
+        by_name = {item['character']['name']: item for item in context['characters']}
+        absent = character_pulse_context(by_name['林照'], context, {}, 4096).messages[0].content
+        for hidden in ('秘密约定青鹭17', '袖口带着独有蓝漆', '掌心留着蓝色痕迹', '"location_id": "loc_house"'):
+            self.assertNotIn(hidden, absent)
+        present = character_pulse_context(by_name['沈砚'], context, {}, 4096).messages[0].content
+        self.assertIn('掌心留着蓝色痕迹', present)
+        self.assertIn('秘密约定青鹭17', present)
+        self.assertNotIn('秘密约定青鹭17', transition_context(context, [], {}, 4096).messages[0].content)
+        self.settle('我先走了。', '沈砚留在窗边。', {'condition': '距离沈砚一步之遥', 'visible_traces': ['袖口微湿']})
+        other = self.store.get_or_create_conversation(self.world, 'char_linzhao')
+        observed = self.store.context_for_turn(other)['player']
+        self.assertEqual(observed['condition'], '')
+        self.assertEqual(observed['visible_traces'], ['袖口微湿'])
+
+    def test_invalid_time_does_not_commit_a_pulse(self):
+        before = self.store.get_world(self.world)
+        for value in ('', '18:43:36', before['world']['current_time']):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.store.commit_world_pulse(self.world, [], {'char_shenyan': {'intention': '不应保存'}}, {'world_time': value})
+            self.assertEqual(self.store.get_world(self.world), before)
+
+    def test_thinking_preference_is_mapped_only_for_supported_models(self):
+        adapter = OpenAICompatibleAdapter()
+        profile = {"model": "deepseek-v4-flash", "base_url": "https://example.test", "path": "/v1/chat/completions", "api_key": "test"}
+        for stream in (True, False):
+            _, _, body = adapter.build_request(RequestContext(system="核对", messages=[], thinking=False), profile, stream=stream)
+            self.assertEqual(body["thinking"], {"type": "disabled"})
+        _, _, thoughtful = adapter.build_request(RequestContext(system="核对", messages=[], thinking=True, reasoning_effort="low"), profile, stream=False)
+        self.assertEqual(thoughtful["reasoning_effort"], "low")
+        _, _, default = adapter.build_request(RequestContext(system="叙事", messages=[]), profile, stream=False)
+        self.assertNotIn("thinking", default)
+        _, _, unrelated = adapter.build_request(RequestContext(system="核对", messages=[], thinking=False), {**profile, "model": "another-model"}, stream=False)
+        self.assertNotIn("thinking", unrelated)
+
+    def test_same_state_does_not_send_irrelevant_citations_for_review(self):
+        context = self.store.context_for_turn(self.conv)
+        result = validate_patch({
+            "event": None,
+            "scene": {"location": "夜航公馆", "world_time": context["world"]["current_time"]},
+            "evidence": {"scene.location": {"quote": "旧开场的句子，不是本轮原文"}},
+        }, context, "沈砚点头。")
+        self.assertEqual(result["evidence"], {})
+
+    def test_pulse_cannot_invent_player_history_or_mark_distant_character_present(self):
+        self.settle('我答应明日回来。', '沈砚点头。', {'commitments': ['明日回公馆']})
+        self.store.get_or_create_conversation(self.world, 'char_linzhao')
+        class Client:
+            invent = False
+            async def response(self, request, profile):
+                payload = json.loads(request.messages[0].content)
+                if '独立行动决定' in request.system:
+                    if payload['角色']['姓名'] == '沈砚':
+                        return ReplySnapshot(content=json.dumps({
+                            'participation': 'active', 'active_reason': 'commitment',
+                            'active_source': payload['玩家可被观察的状态']['commitments'][0]['id'],
+                            'location': '夜航公馆', 'availability': 'present',
+                            'surface_state': '仍在公馆等候。', 'intention': '等玩家赴约',
+                        }, ensure_ascii=False))
+                    return ReplySnapshot(content='{"participation":"quiet"}')
+                return ReplySnapshot(content=json.dumps({
+                    'world_time': '第二天午后' if self.invent else '次日清晨',
+                    'narration': '雾慢慢散开。', 'player_condition': '',
+                    'visible_traces': ['鞋底留下码头木屑'] if self.invent else [],
+                }, ensure_ascii=False))
+        client = Client()
+        asyncio.run(advance_world_pulse(store=self.store, client=client, profile={}, world_id=self.world))
+        current = self.store.get_world(self.world)
+        character = next(c for c in current['characters'] if c['id'] == 'char_shenyan')
+        self.assertEqual(character['availability'], 'reachable')
+        client.invent = True
+        with self.assertRaisesRegex(ValueError, '玩家痕迹'):
+            asyncio.run(advance_world_pulse(store=self.store, client=client, profile={}, world_id=self.world))
+        self.assertEqual(self.store.get_world(self.world), current)
