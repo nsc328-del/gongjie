@@ -29,7 +29,9 @@ from gongjie.storage.store import Store
 
 class FakeSummaryClient:
     async def response(self, context, profile):
-        name = "沈砚" if "沈砚" in context.messages[0].content else "另一个人"
+        if '你是场景规划员' in context.system:
+            return ReplySnapshot(content='{"mode":"stay"}')
+        name = "洛恩·维瑟尔" if "洛恩·维瑟尔" in context.messages[0].content else "另一个人"
         return ReplySnapshot(content=f"{name}把新发生的事留在沉默里，态度比先前更谨慎。")
 
 
@@ -38,9 +40,9 @@ class WorldContinuityTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.store = Store(Path(self.temp.name) / "world.db")
         self.store.initialize()
-        self.world_id = "world_velvet_harbor"
+        self.world_id = "world_daylight"
         self.conversation_id = self.store.get_or_create_conversation(
-            self.world_id, "char_shenyan"
+            self.world_id, "daylight_lorne"
         )
 
     def tearDown(self) -> None:
@@ -56,7 +58,7 @@ class WorldContinuityTests(unittest.TestCase):
         if patch.get("event"):
             patch["event"]["knowledge_sources"] = {
                 name: {"role": "assistant", "quote": content, "kind": "witnessed"}
-                for name in set(patch["event"].get("participants", []) + patch["event"].get("witnesses", []) + ["沈砚"])
+                for name in set(patch["event"].get("participants", []) + patch["event"].get("witnesses", []) + ["洛恩·维瑟尔"])
             }
         assistant = self.store.add_message(self.conversation_id, "assistant", content)
         self.store.apply_world_patch(self.conversation_id, assistant["id"], patch)
@@ -72,26 +74,28 @@ class WorldContinuityTests(unittest.TestCase):
             for index in range(1, 126):
                 self.assistant_turn(f"港钟第{index}次响起。", {
                     "event": {
-                        "title": f"港钟第{index}响", "details": "钟声传遍绯港。",
-                        "visibility": "public", "participants": ["沈砚"], "witnesses": ["沈砚"],
+                        "title": f"港钟第{index}响", "details": "钟声传遍白昼将死。",
+                        "visibility": "public", "participants": ["洛恩·维瑟尔"], "witnesses": ["洛恩·维瑟尔"],
                     },
                     "scene": {}, "relationship": {},
                 })
 
-        titles = [
-            event["title"]
+        observations = [
+            event["details"]
             for event in self.store.context_for_turn(self.conversation_id)["public_events"]
         ]
-        self.assertEqual(len(titles), 120)
-        self.assertEqual(titles[0], "港钟第6响")
-        self.assertEqual(titles[-1], "港钟第125响")
+        self.assertEqual(len(observations), 120)
+        self.assertEqual(observations[0], "港钟第6次响起。")
+        self.assertEqual(observations[-1], "港钟第125次响起。")
 
     def test_turn_marks_reply_complete_before_world_adjudication(self) -> None:
         class FakeTurnClient:
             async def stream(self, context, profile):
-                yield ReplySnapshot(content="沈砚停下话音。", finish_reason="stop")
+                yield ReplySnapshot(content="洛恩·维瑟尔停下话音。", finish_reason="stop")
 
             async def response(self, context, profile):
+                if '你是场景规划员' in context.system:
+                    return ReplySnapshot(content='{"mode":"stay"}')
                 return ReplySnapshot(content=json.dumps({
                     "event": None, "scene": {}, "relationship": {},
                 }, ensure_ascii=False))
@@ -132,9 +136,11 @@ class WorldContinuityTests(unittest.TestCase):
                 self.patch_calls = 0
 
             async def stream(self, context, profile):
-                yield ReplySnapshot(content="沈砚点了点头。", finish_reason="stop")
+                yield ReplySnapshot(content="洛恩·维瑟尔点了点头。", finish_reason="stop")
 
             async def response(self, context, profile):
+                if '你是场景规划员' in context.system:
+                    return ReplySnapshot(content='{"mode":"stay"}')
                 self.patch_calls += 1
                 if self.patch_calls == 1:
                     raise ProviderError("provider", "裁判暂时不可用", retryable=True)
@@ -165,9 +171,11 @@ class WorldContinuityTests(unittest.TestCase):
     def test_patch_skipped_after_two_failures_carries_reason_without_details(self) -> None:
         class BrokenTurnClient:
             async def stream(self, context, profile):
-                yield ReplySnapshot(content="沈砚沉默了。", finish_reason="stop")
+                yield ReplySnapshot(content="洛恩·维瑟尔沉默了。", finish_reason="stop")
 
             async def response(self, context, profile):
+                if '你是场景规划员' in context.system:
+                    return ReplySnapshot(content='{"mode":"stay"}')
                 raise ProviderError(
                     "provider", "上游返回 500：内部节点 trace-9f31", retryable=True
                 )
@@ -195,8 +203,8 @@ class WorldContinuityTests(unittest.TestCase):
     def test_fact_is_immediately_world_record_without_branch_state(self) -> None:
         assistant_id = self.assistant_turn("港口的钟声已经响起。", {
             "event": {
-                "title": "港钟响起", "details": "第七码头的钟声传遍绯港。",
-                "visibility": "public", "participants": ["沈砚"], "witnesses": ["沈砚"],
+                "title": "港钟响起", "details": "第七码头的钟声传遍白昼将死。",
+                "visibility": "public", "participants": ["洛恩·维瑟尔"], "witnesses": ["洛恩·维瑟尔"],
             },
             "scene": {"world_time": "钟响之后", "tension": 28},
             "relationship": {"trust_delta": 3, "note": "共同听过港钟。"},
@@ -216,22 +224,22 @@ class WorldContinuityTests(unittest.TestCase):
         self.assertEqual(
             conversation["messages"][-1]["settlement"]["id"], settlement["id"]
         )
-        relationship = next(item for item in world["relationships"] if item["from_character_id"] == "char_shenyan" and item["to_user"])
-        self.assertEqual(relationship["trust"], 13)
+        relationship = next(item for item in world["relationships"] if item["from_character_id"] == "daylight_lorne" and item["to_user"])
+        self.assertEqual(relationship["trust"], 11)
         with sqlite3.connect(self.store.path) as connection:
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertNotIn("branches", tables)
 
     def test_immediate_settlement_tracks_player_without_leaking_promises(self) -> None:
-        assistant_id = self.assistant_turn("沈砚替他系紧领口，约定钟响后再见。", {
+        assistant_id = self.assistant_turn("洛恩·维瑟尔替他系紧领口，约定钟响后再见。", {
             "event": None,
-            "scene": {"location_id": "loc_house", "tension": 36},
+            "scene": {"location_id": "daylight_throne", "tension": 36},
             "relationship": {},
             "player": {
-                "location": "夜航公馆",
+                "location": "金枝厅",
                 "condition": "领口刚被整理过",
                 "visible_traces": ["右肩留着一道新鲜抓痕"],
-                "commitments": ["钟响后回夜航公馆见沈砚"],
+                "commitments": ["钟响后回金枝厅见洛恩·维瑟尔"],
             },
         })
 
@@ -240,17 +248,17 @@ class WorldContinuityTests(unittest.TestCase):
         self.assertEqual(settlement["source_message_id"], assistant_id)
         self.assertIsNone(settlement["event_id"])
         self.assertEqual(
-            settlement["player"]["commitments"], ["钟响后回夜航公馆见沈砚"]
+            settlement["player"]["commitments"], ["钟响后回金枝厅见洛恩·维瑟尔"]
         )
         self.assertEqual(conversation["messages"][-1]["settlement"]["scene"]["tension"], 36)
 
         world = self.store.get_world(self.world_id)
-        self.assertEqual(world["player"]["location_name"], "夜航公馆")
+        self.assertEqual(world["player"]["location_name"], "金枝厅")
         self.assertEqual(world["player"]["visible_traces"], ["右肩留着一道新鲜抓痕"])
-        self.assertEqual(world["player"]["commitments"][0]["character_name"], "沈砚")
+        self.assertEqual(world["player"]["commitments"][0]["character_name"], "洛恩·维瑟尔")
         shenyan_context = self.store.context_for_turn(self.conversation_id)
         self.assertEqual(len(shenyan_context["player"]["commitments"]), 1)
-        cenye = self.store.get_or_create_conversation(self.world_id, "char_cenye")
+        cenye = self.store.get_or_create_conversation(self.world_id, "daylight_severin")
         cenye_context = self.store.context_for_turn(cenye)
         self.assertEqual(cenye_context["player"]["commitments"], [])
         self.assertEqual(cenye_context["player"]["visible_traces"], ["右肩留着一道新鲜抓痕"])
@@ -261,11 +269,13 @@ class WorldContinuityTests(unittest.TestCase):
                 self.character_payloads: dict[str, dict] = {}
 
             async def response(self, context, profile):
+                if '你是场景规划员' in context.system:
+                    return ReplySnapshot(content='{"mode":"stay"}')
                 payload = json.loads(context.messages[0].content)
                 if "独立行动决定" in context.system:
                     name = payload["角色"]["姓名"]
                     self.character_payloads[name] = payload
-                    if name != "沈砚":
+                    if name != "洛恩·维瑟尔":
                         return ReplySnapshot(content=json.dumps({
                             "participation": "quiet",
                             "active_reason": "",
@@ -283,20 +293,20 @@ class WorldContinuityTests(unittest.TestCase):
                         "intention": f"{name}决定主动确认玩家的去向",
                         "surface_state": f"{name}已经收拾好情绪，准备离开原处。",
                         "location": payload["角色"]["当前地点"],
-                        "availability": "incoming" if name == "沈砚" else "reachable",
+                        "availability": "incoming" if name == "洛恩·维瑟尔" else "reachable",
                         "encounter_hook": f"{name}留下了一道可以追过去的动静。",
                     }, ensure_ascii=False))
                 return ReplySnapshot(content=json.dumps({
                     "world_time": "港钟响过一刻",
                     "narration": "钟声越过屋脊，仍在等待的人终于开始移动，港口重新排列了下一次相遇。",
-                    "player_condition": payload["玩家当前状态"].get("condition", ""),
-                    "visible_traces": payload["玩家当前状态"].get("visible_traces", []),
+                    "player_condition_action": "keep",
+                    "retained_trace_indices": list(range(len(payload["玩家当前状态"].get("visible_traces", [])))),
                 }, ensure_ascii=False))
 
-        self.assistant_turn("沈砚把钥匙收进掌心。", {
+        self.assistant_turn("洛恩·维瑟尔把钥匙收进掌心。", {
             "event": {
-                "title": "钥匙被收起", "details": "沈砚收起了钥匙。",
-                "visibility": "private", "participants": ["沈砚"], "witnesses": ["沈砚"],
+                "title": "钥匙被收起", "details": "洛恩·维瑟尔收起了钥匙。",
+                "visibility": "private", "participants": ["洛恩·维瑟尔"], "witnesses": ["洛恩·维瑟尔"],
             },
             "scene": {}, "relationship": {}, "player": {},
         })
@@ -308,9 +318,9 @@ class WorldContinuityTests(unittest.TestCase):
 
         world = self.store.get_world(self.world_id)
         self.assertEqual(result["pulse_number"], 1)
-        self.assertEqual(world["world"]["current_time"], "港钟响过一刻")
+        self.assertEqual(world["world"]["current_time"], "次日清晨")
         self.assertIn("开始移动", world["pulse"]["narration"])
-        shenyan = next(item for item in world["characters"] if item["id"] == "char_shenyan")
+        shenyan = next(item for item in world["characters"] if item["id"] == "daylight_lorne")
         self.assertEqual(shenyan["availability"], "incoming")
         self.assertIn("追过去", shenyan["encounter_hook"])
         self.assertNotIn("intention", shenyan)
@@ -319,25 +329,28 @@ class WorldContinuityTests(unittest.TestCase):
             self.store.context_for_turn(self.conversation_id)["character_world_state"]["intention"],
         )
         self.assertEqual(
-            client.character_payloads["沈砚"]["世界"]["用户希望推进到的时刻"],
+            client.character_payloads["洛恩·维瑟尔"]["世界"]["用户希望推进到的时刻"],
             "次日清晨",
         )
         self.assertEqual(world["pending_sync_count"], 0)
         self.assertTrue(any(
-            entry["title"] == "钥匙被收起"
-            for entry in client.character_payloads["沈砚"]["此前认知"]
+            entry["details"] == "洛恩·维瑟尔把钥匙收进掌心。"
+            and entry["knowledge_state"] == "witnessed"
+            for entry in client.character_payloads["洛恩·维瑟尔"]["此前认知"]
         ))
         self.assertFalse(any(
-            entry["title"] == "钥匙被收起"
-            for entry in client.character_payloads["岑野"]["此前认知"]
+            entry["details"] == "洛恩·维瑟尔把钥匙收进掌心。"
+            for entry in client.character_payloads["塞维安·雪莱"]["此前认知"]
         ))
 
     def test_world_pulse_skips_character_whose_action_fails(self) -> None:
         class PartialPulseClient:
             async def response(self, context, profile):
+                if '你是场景规划员' in context.system:
+                    return ReplySnapshot(content='{"mode":"stay"}')
                 payload = json.loads(context.messages[0].content)
                 if "独立行动决定" in context.system:
-                    if payload["角色"]["姓名"] == "沈砚":
+                    if payload["角色"]["姓名"] == "洛恩·维瑟尔":
                         raise ProviderError("provider", "模型暂时不可用", retryable=True)
                     return ReplySnapshot(content=json.dumps({
                         "participation": "active",
@@ -352,8 +365,8 @@ class WorldContinuityTests(unittest.TestCase):
                 return ReplySnapshot(content=json.dumps({
                     "world_time": "次日清晨",
                     "narration": "夜色退去，港口重新热闹起来。",
-                    "player_condition": "",
-                    "visible_traces": [],
+                    "player_condition_action": "clear",
+                    "retained_trace_indices": [],
                 }, ensure_ascii=False))
 
         result = asyncio.run(advance_world_pulse(
@@ -362,17 +375,19 @@ class WorldContinuityTests(unittest.TestCase):
         ))
 
         self.assertEqual(result["pulse_number"], 1)
-        self.assertNotIn("char_shenyan", result["updated_characters"])
-        self.assertIn("char_cenye", result["updated_characters"])
-        self.assertIn("char_linzhao", result["updated_characters"])
+        self.assertNotIn("daylight_lorne", result["updated_characters"])
+        self.assertIn("daylight_severin", result["updated_characters"])
+        self.assertIn("daylight_evelyn", result["updated_characters"])
         world = self.store.get_world(self.world_id)
         self.assertIn("重新热闹", world["pulse"]["narration"])
-        cenye = next(item for item in world["characters"] if item["id"] == "char_cenye")
+        cenye = next(item for item in world["characters"] if item["id"] == "daylight_severin")
         self.assertIn("前往", cenye["encounter_hook"])
 
     def test_world_pulse_fails_when_every_character_action_fails(self) -> None:
         class BrokenPulseClient:
             async def response(self, context, profile):
+                if '你是场景规划员' in context.system:
+                    return ReplySnapshot(content='{"mode":"stay"}')
                 raise ProviderError("provider", "模型不可用", retryable=True)
 
         with self.assertRaises(ProviderError):
@@ -385,12 +400,12 @@ class WorldContinuityTests(unittest.TestCase):
     def test_public_fact_reaches_others_only_after_world_sync(self) -> None:
         self.assistant_turn("港口的钟声已经响起。", {
             "event": {
-                "title": "港钟响起", "details": "第七码头的钟声传遍绯港。",
-                "visibility": "public", "participants": ["沈砚"], "witnesses": ["沈砚"],
+                "title": "港钟响起", "details": "第七码头的钟声传遍白昼将死。",
+                "visibility": "public", "participants": ["洛恩·维瑟尔"], "witnesses": ["洛恩·维瑟尔"],
             },
             "scene": {}, "relationship": {},
         })
-        other = self.store.get_or_create_conversation(self.world_id, "char_cenye")
+        other = self.store.get_or_create_conversation(self.world_id, "daylight_severin")
         self.assertEqual(self.store.context_for_turn(other)["public_events"], [])
 
         result = asyncio.run(sync_world_cognition(
@@ -410,6 +425,8 @@ class WorldContinuityTests(unittest.TestCase):
                 self.budgets: list[int] = []
 
             async def response(self, context, profile):
+                if '你是场景规划员' in context.system:
+                    return ReplySnapshot(content='{"mode":"stay"}')
                 self.budgets.append(context.max_tokens)
                 if context.max_tokens < 4096:
                     return ReplySnapshot(reasoning="仍在推理", finish_reason="length")
@@ -417,8 +434,8 @@ class WorldContinuityTests(unittest.TestCase):
 
         self.assistant_turn("港口的钟声已经响起。", {
             "event": {
-                "title": "港钟响起", "details": "第七码头的钟声传遍绯港。",
-                "visibility": "public", "participants": ["沈砚"], "witnesses": ["沈砚"],
+                "title": "港钟响起", "details": "第七码头的钟声传遍白昼将死。",
+                "visibility": "public", "participants": ["洛恩·维瑟尔"], "witnesses": ["洛恩·维瑟尔"],
             },
             "scene": {}, "relationship": {},
         })
@@ -435,14 +452,14 @@ class WorldContinuityTests(unittest.TestCase):
         self.assertEqual(self.store.get_world(self.world_id)["pending_sync_count"], 0)
 
     def test_private_fact_never_spreads_during_world_sync(self) -> None:
-        self.assistant_turn("沈砚把钥匙收进掌心。", {
+        self.assistant_turn("洛恩·维瑟尔把钥匙收进掌心。", {
             "event": {
-                "title": "钥匙被收起", "details": "沈砚收起了钥匙。",
-                "visibility": "private", "participants": ["沈砚"], "witnesses": ["沈砚"],
+                "title": "钥匙被收起", "details": "洛恩·维瑟尔收起了钥匙。",
+                "visibility": "private", "participants": ["洛恩·维瑟尔"], "witnesses": ["洛恩·维瑟尔"],
             },
             "scene": {}, "relationship": {},
         })
-        other = self.store.get_or_create_conversation(self.world_id, "char_cenye")
+        other = self.store.get_or_create_conversation(self.world_id, "daylight_severin")
         asyncio.run(sync_world_cognition(
             store=self.store, client=FakeSummaryClient(), profile={"max_tokens": 512},
             world_id=self.world_id,
@@ -458,13 +475,13 @@ class WorldContinuityTests(unittest.TestCase):
         original_location_ids = {item["id"] for item in original["locations"]}
         original_time = original["world"]["current_time"]
 
-        assistant_id = self.assistant_turn("沈砚走进鸦色会所。", {
+        assistant_id = self.assistant_turn("洛恩·维瑟尔走进内阁书库。", {
             "event": {
-                "title": "沈砚抵达会所", "details": "沈砚已经来到鸦色会所。",
-                "visibility": "public", "participants": ["沈砚"], "witnesses": ["沈砚"],
+                "title": "洛恩·维瑟尔抵达会所", "details": "洛恩·维瑟尔已经来到内阁书库。",
+                "visibility": "public", "participants": ["洛恩·维瑟尔"], "witnesses": ["洛恩·维瑟尔"],
             },
             "scene": {
-                "location_id": "loc_club", "world_time": "钟响之后", "tension": 64,
+                "location_id": "daylight_archive", "world_time": "钟响之后", "tension": 64,
                 "active_threads": ["尚未说出口的条件"],
             },
             "relationship": {
@@ -478,7 +495,7 @@ class WorldContinuityTests(unittest.TestCase):
             world_id=self.world_id,
         ))
         room = self.store.create_room(
-            self.world_id, "会所夜谈", "loc_club", ["char_shenyan", "char_cenye"]
+            self.world_id, "会所夜谈", "daylight_archive", ["daylight_lorne", "daylight_severin"]
         )
         self.store.add_room_message(room["room"]["id"], "user", None, "都留下。")
 
@@ -497,36 +514,50 @@ class WorldContinuityTests(unittest.TestCase):
         self.assertEqual(reset["events"], [])
         self.assertEqual(reset["pending_sync_count"], 0)
         self.assertEqual(self.store.list_rooms(self.world_id), [])
-        shenyan = next(item for item in reset["characters"] if item["id"] == "char_shenyan")
-        self.assertEqual(shenyan["current_location_id"], "loc_house")
+        shenyan = next(item for item in reset["characters"] if item["id"] == "daylight_lorne")
+        self.assertEqual(shenyan["current_location_id"], "daylight_throne")
         self.assertEqual(shenyan["state_summary"], shenyan["tagline"])
         relationship = next(
             item for item in reset["relationships"]
-            if item["from_character_id"] == "char_shenyan" and item["to_user"]
+            if item["from_character_id"] == "daylight_lorne" and item["to_user"]
         )
         self.assertEqual(
             (relationship["label"], relationship["trust"], relationship["desire"], relationship["tension"], relationship["notes"]),
-            ("未命名的牵引", 10, 18, 12, "关系会由共同经历塑形。"),
+            ("尚待谈判的独立顾问", 8, 8, 22, "知道公开校验结果；授权书尚未签署，女主没有向皇帝承诺效忠。"),
         )
         with self.assertRaises(KeyError):
             self.store.get_conversation(self.conversation_id)
         fresh_conversation = self.store.get_or_create_conversation(
-            self.world_id, "char_shenyan"
+            self.world_id, "daylight_lorne"
         )
         self.assertNotEqual(fresh_conversation, self.conversation_id)
         self.assertEqual(self.store.get_conversation(fresh_conversation)["messages"], [])
 
     def test_preset_creates_an_independent_world_instance(self) -> None:
         bundle = self.store.create_world({
-            "name": "另一个绯港", "template_id": "velvet_harbor",
+            "name": "另一个白昼将死", "template_id": "daylight",
             "premise": "", "atmosphere": "", "rules": "", "current_time": "",
         })
-        self.assertEqual(bundle["world"]["name"], "另一个绯港")
-        self.assertEqual(len(bundle["locations"]), 3)
-        self.assertEqual(len(bundle["characters"]), 3)
-        self.assertNotEqual(bundle["characters"][0]["id"], "char_shenyan")
+        self.assertEqual(bundle["world"]["name"], "另一个白昼将死")
+        self.assertEqual(len(bundle["locations"]), 6)
+        self.assertEqual(len(bundle["characters"]), 4)
+        self.assertNotEqual(bundle["characters"][0]["id"], "daylight_lorne")
         self.assertTrue(bundle["world"]["opening_narration"])
         self.assertTrue(all(item["opening_hook"] for item in bundle["characters"]))
+        self.assertEqual(len(bundle["relationships"]), 10)
+        character_ids = {item["id"] for item in bundle["characters"]}
+        location_ids = {item["id"] for item in bundle["locations"]}
+        self.assertTrue(all(item["current_location_id"] in location_ids for item in bundle["characters"]))
+        self.assertTrue(all(item["from_character_id"] in character_ids and
+                            (item["to_user"] or item["to_character_id"] in character_ids)
+                            for item in bundle["relationships"]))
+        from gongjie.storage.worldbooks import public_templates
+        templates = public_templates()
+        self.assertEqual([item["id"] for item in templates], ["daylight"])
+        self.assertNotIn("characters", templates[0])
+        self.assertNotIn("仅本人掌握的初始私事", json.dumps(templates, ensure_ascii=False))
+        with self.assertRaisesRegex(ValueError, "unknown_world_template"):
+            self.store.create_world({"name": "不可用模板", "template_id": "velvet_harbor"})
 
     def test_opening_is_compiled_from_existing_state_and_saved_once(self) -> None:
         context = self.store.context_for_turn(self.conversation_id)
@@ -542,14 +573,14 @@ class WorldContinuityTests(unittest.TestCase):
         self.assertIn("阶段结果或余波", roleplay)
         self.assertIn("软状态", roleplay)
         adjudication = patch_context(
-            context, "沈砚停在门边。", {"max_tokens": 16000}
+            context, "洛恩·维瑟尔停在门边。", {"max_tokens": 16000}
         )
         self.assertEqual(adjudication.max_tokens, 16000)
-        self.assertIn("硬状态真正改变", adjudication.system)
-        self.assertIn("commitments 只记录玩家亲口作出的明确承诺", adjudication.system)
+        self.assertIn("只提取本轮实际变化", adjudication.system)
+        self.assertIn("新增必须引用 user 的明确承诺", adjudication.system)
 
         first, created = self.store.add_opening_message(
-            self.conversation_id, "沈砚抬眼看向门边。"
+            self.conversation_id, "洛恩·维瑟尔抬眼看向门边。"
         )
         second, created_again = self.store.add_opening_message(
             self.conversation_id, "这句不应覆盖第一次开场。"
@@ -559,12 +590,12 @@ class WorldContinuityTests(unittest.TestCase):
         self.assertEqual(second["id"], first["id"])
         self.assertEqual(
             [item["content"] for item in self.store.get_conversation(self.conversation_id)["messages"]],
-            ["沈砚抬眼看向门边。"],
+            ["洛恩·维瑟尔抬眼看向门边。"],
         )
 
     def test_new_pulse_creates_one_reentry_opening_per_conversation(self) -> None:
         initial, created = self.store.add_opening_message(
-            self.conversation_id, "沈砚在钟响前看向门边。"
+            self.conversation_id, "洛恩·维瑟尔在钟响前看向门边。"
         )
         self.assertTrue(created)
         self.assertFalse(self.store.get_conversation(self.conversation_id)["needs_scene_entry"])
@@ -573,17 +604,17 @@ class WorldContinuityTests(unittest.TestCase):
             self.world_id,
             [],
             {
-                "char_shenyan": {
+                "daylight_lorne": {
                     "intention": "去窗边等玩家回来",
-                    "surface_state": "沈砚换下外套，仍没有离开。",
-                    "location_id": "loc_house",
+                    "surface_state": "洛恩·维瑟尔换下外套，仍没有离开。",
+                    "location_id": "daylight_throne",
                     "availability": "reachable",
-                    "encounter_hook": "夜航公馆的窗重新亮了。",
+                    "encounter_hook": "金枝厅的窗重新亮了。",
                 },
             },
             {
                 "world_time": "港钟响过一刻",
-                "narration": "钟声过去，绯港进入了新的时段。",
+                "narration": "钟声过去，白昼将死进入了新的时段。",
                 "player_condition": "",
                 "visible_traces": [],
             },
@@ -596,11 +627,11 @@ class WorldContinuityTests(unittest.TestCase):
         self.assertEqual(context["scene"]["world_time"], "港钟响过一刻")
         request = opening_request_context(context, {"max_tokens": 16000}, reentry=True)
         self.assertIn("新时段接续开场", request.system)
-        self.assertIn("夜航公馆的窗重新亮了", request.system)
+        self.assertIn("金枝厅的窗重新亮了", request.system)
         self.assertIn(initial["content"], request.system)
         grounding = scene_entry_grounding_context(
             context,
-            "沈砚从玩家鞋底的青苔认出他刚去过第七码头。",
+            "洛恩·维瑟尔从玩家鞋底的青苔认出他刚去过第七码头。",
             {"max_tokens": 16000},
         )
         grounding_payload = json.loads(grounding.messages[0].content)
@@ -615,14 +646,14 @@ class WorldContinuityTests(unittest.TestCase):
         self.assertIn("软连续性", grounding.system)
         self.assertEqual(
             parse_scene_entry_grounding(json.dumps({
-                "text": "沈砚抬眼看向来人。",
+                "text": "洛恩·维瑟尔抬眼看向来人。",
                 "removed": ["无来源的鞋底青苔"],
             }, ensure_ascii=False))["text"],
-            "沈砚抬眼看向来人。",
+            "洛恩·维瑟尔抬眼看向来人。",
         )
 
         reentry, reentry_created = self.store.add_opening_message(
-            self.conversation_id, "港钟已经响过，沈砚仍站在亮着的窗边。"
+            self.conversation_id, "港钟已经响过，洛恩·维瑟尔仍站在亮着的窗边。"
         )
         duplicate, duplicate_created = self.store.add_opening_message(
             self.conversation_id, "同一轮不应再生成一次。"
@@ -639,7 +670,7 @@ class WorldContinuityTests(unittest.TestCase):
         )
 
     def test_reentry_is_saved_only_after_grounding_review(self) -> None:
-        self.store.add_opening_message(self.conversation_id, "沈砚在窗边等了一夜。")
+        self.store.add_opening_message(self.conversation_id, "洛恩·维瑟尔在窗边等了一夜。")
         self.store.commit_world_pulse(
             self.world_id,
             [],
@@ -658,15 +689,17 @@ class WorldContinuityTests(unittest.TestCase):
                 self.calls = 0
 
             async def response(self, context, profile):
+                if '你是场景规划员' in context.system:
+                    return ReplySnapshot(content='{"mode":"stay"}')
                 self.calls += 1
                 if "记忆校对员" not in context.system:
                     return ReplySnapshot(
-                        content="沈砚看见玩家鞋底的青苔，认出他刚从第七码头回来。"
+                        content="洛恩·维瑟尔看见玩家鞋底的青苔，认出他刚从第七码头回来。"
                     )
                 if not self.valid_audit:
                     return ReplySnapshot(content="无法校对")
                 return ReplySnapshot(content=json.dumps({
-                    "text": "沈砚从窗边转过身，目光停在来人身上。",
+                    "text": "洛恩·维瑟尔从窗边转过身，目光停在来人身上。",
                     "removed": ["无来源的鞋底青苔和玩家路线"],
                 }, ensure_ascii=False))
 
@@ -688,7 +721,7 @@ class WorldContinuityTests(unittest.TestCase):
         self.assertTrue(result["created"])
         self.assertEqual(
             result["message"]["content"],
-            "沈砚从窗边转过身，目光停在来人身上。",
+            "洛恩·维瑟尔从窗边转过身，目光停在来人身上。",
         )
         self.assertNotIn(
             "青苔", self.store.get_conversation(self.conversation_id)["messages"][-1]["content"]
@@ -700,16 +733,18 @@ class WorldContinuityTests(unittest.TestCase):
                 self.transition_payload: dict = {}
 
             async def response(self, context, profile):
+                if '你是场景规划员' in context.system:
+                    return ReplySnapshot(content='{"mode":"stay"}')
                 payload = json.loads(context.messages[0].content)
                 if "独立行动决定" in context.system:
                     name = payload["角色"]["姓名"]
-                    if name == "岑野":
+                    if name == "塞维安·雪莱":
                         return ReplySnapshot(content=json.dumps({
                             "participation": "active",
                             "active_reason": "new_fact",
                             "active_source": "event_that_does_not_exist",
                             "intention": "去追查一条并不存在的线索",
-                            "surface_state": "岑野忽然开始调查。",
+                            "surface_state": "塞维安·雪莱忽然开始调查。",
                             "location": payload["角色"]["当前地点"],
                             "availability": "reachable",
                             "encounter_hook": "出现了一条新线索。",
@@ -728,18 +763,18 @@ class WorldContinuityTests(unittest.TestCase):
                 return ReplySnapshot(content=json.dumps({
                     "world_time": "次日清晨",
                     "narration": "雾在清晨慢慢散开。",
-                    "player_condition": "",
-                    "visible_traces": [],
+                    "player_condition_action": "clear",
+                    "retained_trace_indices": [],
                 }, ensure_ascii=False))
 
         self.store.commit_world_pulse(
             self.world_id,
             [],
             {
-                "char_cenye": {
+                "daylight_severin": {
                     "intention": "仍在路上",
-                    "surface_state": "岑野尚未抵达。",
-                    "location_id": "loc_club",
+                    "surface_state": "塞维安·雪莱尚未抵达。",
+                    "location_id": "daylight_archive",
                     "availability": "incoming",
                     "encounter_hook": "",
                 }
@@ -761,10 +796,10 @@ class WorldContinuityTests(unittest.TestCase):
             item["角色"]
             for item in client.transition_payload["角色在下一时段可被玩家察觉的变化"]
         }
-        self.assertNotIn("岑野", visible_names)
+        self.assertNotIn("塞维安·雪莱", visible_names)
         cenye = next(
             item for item in self.store.get_world(self.world_id)["characters"]
-            if item["id"] == "char_cenye"
+            if item["id"] == "daylight_severin"
         )
         self.assertEqual(cenye["availability"], "incoming")
         self.assertEqual(cenye["encounter_hook"], "")

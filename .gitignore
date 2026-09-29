@@ -3,6 +3,21 @@ __pycache__/
 .venv/
 data/*.db
 data/*.db-*
+data/*.db.*
 data/secrets.json
 .DS_Store
 
+
+ios/.build/
+ios/build/
+**/xcuserdata/
+
+# Local worldbooks and the retired bundled copy
+/worldbooks/绯港/
+/worldbooks/绯色沈宅/
+/ios/Sources/GongjieCore/Resources/Harbor.json
+
+/data/access.json
+
+/data/diagnostics/
+/data/spaces/

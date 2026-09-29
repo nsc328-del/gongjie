@@ -8,6 +8,7 @@ from typing import Any
 from gongjie.ai.providers import ContextMessage, ProviderClient, RequestContext
 from gongjie.storage.store import Store
 from gongjie.domain.knowledge import player_observation
+from gongjie.domain.locations import known_locations, location_view, project_location_fields
 
 
 def _parse_object(text: str) -> dict[str, Any] | None:
@@ -28,6 +29,17 @@ def _parse_object(text: str) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _pulse_locations(item: dict[str, Any], context: dict[str, Any]) -> list[dict[str, Any]]:
+    character = item["character"]
+    locations = item.get("locations")
+    if locations is None:
+        locations = known_locations(context["locations"], character["id"])
+    return [place for place in locations if (
+        place["id"] == character.get("current_location_id")
+        or location_view(place)["route_known"]
+    )]
+
+
 def character_pulse_context(
     item: dict[str, Any], context: dict[str, Any], profile: dict[str, Any], output_budget: int,
     target_time: str = "",
@@ -39,7 +51,7 @@ def character_pulse_context(
         and character["current_location_id"] == current_player.get("location_id")
     )
     player = {
-        **(current_player if can_observe else {}),
+        **(project_location_fields(current_player, item.get('locations') or []) if can_observe else {}),
         "commitments": item.get("commitments") or [],
     }
     payload = {
@@ -50,7 +62,7 @@ def character_pulse_context(
             "当前时刻": context["world"]["current_time"],
             "用户希望推进到的时刻": target_time or "未指定，由世界自然决定",
         },
-        "可选地点": [location["name"] for location in context["locations"]],
+        "可选地点": [location["name"] for location in _pulse_locations(item, context)],
         "角色": {
             "姓名": character["name"],
             "身份": character["role"],
@@ -73,7 +85,8 @@ def character_pulse_context(
     }
     system = """你只负责共享世界中一名角色在时间向前一步时的独立行动决定。你不是全知导演，只能使用该角色获得的认知；不知道的事绝不能猜中。玩家当前外部状态只在实际同地时提供；缺失即不可观察，不能据此猜测玩家现在的位置或经历。对自己的承诺只是约定，不证明玩家已到场或已经兑现。
     这次决定是下一时段的意图和局面，不是已经发生的世界事实。角色可以等待、离开、调查、赴约、主动寻找玩家、拒绝见面或继续自己的生活，不要总是原地等待玩家。
-    如果用户给出了希望到达的故事时间，优先以它安排下一时段；它只是故事时间锚点，不要求原样复述，也不是现实钟点。
+    给出的目标时刻已经确定，必须按那个时刻安排状态；若自己的约定已经到点，应呈现可开始赴约的准备或等待，不再当成明日之事。不得因此推定玩家已经到场。
+    认知中只是听到名字、尚未明确去向的地方不在可选地点中，不能直接移动过去；可以保留打听方位的意图。location 只能选择输入目录或保持当前地点，不用听闻补出路线。
 只返回 JSON，不要 Markdown 或解释：
 {
   "participation": "active|quiet",
@@ -128,10 +141,10 @@ def transition_context(
 {
   "world_time": "比当前时刻自然向后推进的故事时间锚点，如次日清晨、一周后；禁止填写现实钟点",
   "narration": "80到180字的局面播报，把地点、等待、错过或正在靠近的变化组织成一段自然叙事，不逐项点名汇报",
-  "player_condition": "时间过去后玩家仍可被外界观察到的整体状态；没有则空字符串",
-  "visible_traces": ["时间过去后仍然可见的玩家痕迹，完整列表，最多8条"]
+  "player_condition_action": "keep 或 clear；原有整体状态仍在则 keep，已自然消退或原来为空则 clear",
+  "retained_trace_indices": [0]
 }
-    如果用户给出了希望到达的故事时间，优先以它作为时间锚点，但不要求原样复述。时间必须向前，不能换一种说法停在原时刻。player_condition 只能原样保留输入或在已经自然消退时返回空字符串；visible_traces 只能保留输入中的原文条目或删除自然消退的条目，输入为空就返回空列表，不新增痕迹。不能补写玩家在这段时间站了一夜、走了某条路、去了某个地点，也不能用木屑、气味或灰尘新造去向证据。
+    给出的目标时刻已经确定，正文与 world_time 必须使用这个时刻，不提前也不延后。时间必须向前，不能换一种说法停在原时刻。player_condition_action 只能选 keep 或 clear，不输出状态文本。retained_trace_indices 只能填写“玩家当前状态.visible_traces”中仍可见的条目编号（从0开始），已自然消退的条目不选；没有痕迹则必须返回 []，示例中的 [0] 仅在第0项确实存在且应保留时使用，不得填写文字或新增编号。不能补写玩家在这段时间站了一夜、走了某条路、去了某个地点，也不能用木屑、气味或灰尘新造去向证据。
 narration 只能重组输入中已有的地点、外部变化和公开事实；不得新造信件、报纸、钥匙、伤痕、脚印、证据、来客或已完成的调查。不得写“你推开门”“你看见”“你走到”等玩家动作或感知，只描述无需玩家配合也成立的世界局面。"""
     return RequestContext(
         system=system,
@@ -139,6 +152,28 @@ narration 只能重组输入中已有的地点、外部变化和公开事实；�
         max_tokens=min(int(profile.get("max_tokens") or output_budget), output_budget),
         temperature=0.4, thinking=False,
     )
+
+
+def resolve_transition_state(context: dict[str, Any], transition: dict[str, Any]) -> dict[str, Any]:
+    observations = player_observation(
+        context["player"], [entry["character"]["name"] for entry in context["characters"]]
+    )
+    action = transition.get("player_condition_action")
+    if action not in ("keep", "clear"):
+        raise ValueError("这一刻的状态选择无效，请重新推进")
+    traces = observations.get("visible_traces", [])
+    indices = transition.get("retained_trace_indices")
+    if not isinstance(indices, list) or any(
+        type(index) is not int or not 0 <= index < len(traces) for index in indices
+    ) or len(set(indices)) != len(indices):
+        raise ValueError("这一刻的玩家痕迹选择无效，请重新推进")
+    # 模型只能选择已有状态；存储值始终来自本次认知投影，不使用生成文本。
+    return {
+        "world_time": transition.get("world_time"),
+        "narration": transition.get("narration"),
+        "player_condition": observations.get("condition", "") if action == "keep" else "",
+        "visible_traces": [trace for index, trace in enumerate(traces) if index in indices],
+    }
 
 
 async def review_transition(
@@ -209,7 +244,7 @@ def _active_reason_is_grounded(
     current_availability = world_state.get("availability") or "reachable"
     proposed_availability = value.get("availability")
     availability_changed = (
-        proposed_availability in {"present", "incoming", "unavailable"}
+        proposed_availability in {"present", "reachable", "incoming", "unavailable"}
         and proposed_availability != current_availability
         and (
             proposed_availability != "present"
@@ -223,13 +258,55 @@ def _active_reason_is_grounded(
     )
 
 
+async def appointment_time(store: Store, client: ProviderClient, context: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+    promises = context["player"].get("commitments") or []
+    histories = []
+    # Only the clock planner sees these private excerpts. They never enter
+    # another character's request or the public narration.
+    with store.read() as connection:
+        for character_id in dict.fromkeys(p.get("character_id") for p in promises):
+            if not character_id:
+                continue
+            rows = connection.execute("""SELECT m.role,m.content,j.context,t.decision
+                FROM messages m JOIN conversations c ON c.id=m.conversation_id
+                LEFT JOIN settlement_jobs j ON j.source_id=m.id
+                LEFT JOIN turn_settlements t ON t.source_message_id=m.id
+                WHERE c.world_id=? AND c.character_id=? AND m.status='complete'
+                ORDER BY m.sequence DESC LIMIT 24""", (context["world"]["id"], character_id)).fetchall()
+            histories.append({"character_id": character_id, "history": [
+                {"role": r["role"], "content": r["content"],
+                 "recorded_time": (json.loads(r["context"] or "{}").get("world") or {}).get("current_time"),
+                 "decision": json.loads(r["decision"] or "{}")} for r in reversed(rows)]})
+    request = RequestContext(system="""你是世界时间规划员，只决定下一个故事时刻，不写剧情、不替玩家行动。
+commitments 是已确认且仍有效的承诺，优先于历史中其他状态提案的拒绝标记；不能因同段的其他变化被拒绝而否定已有承诺。若当前是前一日夜间，承诺是明早第七声钟，就推进到次日早晨第七声钟，绝不能输出夜钟初响后这种微小推进。
+已确认参与某项工作的承诺，其对应对话中角色给出的具体集合时间可以补足这项工作的时间安排；不要求玩家再次逐字重复日期。不要把“已答应参与任务后安排明早集合”误判成无关的单方面邀请。只补足现有承诺的时间，不新增承诺。
+已有承诺优先：从明确约定中选距离当前最近、尚未错过的开始时刻，直接推进到能开始赴约的时刻，而不是只过一会儿再次提醒准时。用相关历史补足承诺摘要遗漏的日期和钟次；历史的明天相对 recorded_time 成立，不相对当前时间重新顺延。rejected 的状态不能作为约定已成立的依据，角色单方面邀请也不是承诺。
+若约定已经到点或过期，不自动改约到明天，不宣布完成；自然推进到当前相邻的可行动时刻。长期目标或时间不明确的承诺不强行安排具体期限。没有明确赴约时间则选择下一段有意义的自然时段。时间必须向前，不能跳过更近的明确约定。遵守世界钟历。
+只返回 {"world_time":"明确且完整的故事时间锚点","ready_commitment_ids":["在该时刻已经可以开始赴约的现有承诺id"],"appointment_times":{"承诺id":"该承诺自身的明确约定时间，未知则空字符串"}}。尚未到时、已经过期或没有明确时间的承诺不选；可根据历史识别参与同一约定的承诺。编号必须来自输入。不得返回地点、秘密、承诺正文或解释。""",
+        messages=[ContextMessage(role="user", content=json.dumps({"world": {k:context["world"][k] for k in ("current_time", "rules")}, "commitments": promises, "history": histories}, ensure_ascii=False))],
+        max_tokens=8192, temperature=0, thinking=True, reasoning_effort="low")
+    result = await _response_object(client, [request, request], profile)
+    value = result.get("world_time") if result else None
+    if not isinstance(value, str) or not value.strip() or value.strip() == context["world"]["current_time"]:
+        raise ValueError("未能确定下一段世界时间，请再试一次")
+    ready = result.get("ready_commitment_ids", [])
+    valid = {p["id"] for p in promises}
+    if not isinstance(ready, list) or any(not isinstance(i, str) or i not in valid for i in ready):
+        raise ValueError("赴约时间规划无效，请再试一次")
+    times = result.get("appointment_times", {})
+    if not isinstance(times, dict) or any(k not in valid or not isinstance(v, str) or len(v)>120 for k,v in times.items()):
+        raise ValueError("约定时间预告无效")
+    return {"world_time": value.strip()[:120], "ready_commitment_ids": list(dict.fromkeys(ready)), "appointment_times": times}
+
+
 async def _advance_world_pulse(
     *, store: Store, client: ProviderClient, profile: dict[str, Any], world_id: str,
-    target_time: str = "",
+    target_time: str = "", clock: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     target_time = str(target_time or "").strip()[:120]
     context = store.cognition_sync_context(world_id)
-    location_by_name = {item["name"]: item["id"] for item in context["locations"]}
+    clock = clock or (await appointment_time(store, client, context, profile) if not target_time and context["player"].get("commitments") else {"world_time": target_time, "ready_commitment_ids": []})
+    target_time = clock["world_time"]
     output_budget = int(profile.get("max_tokens") or 16384)
 
     if not context["characters"]:
@@ -245,6 +322,7 @@ async def _advance_world_pulse(
             profile,
         )
         character = item["character"]
+        location_by_name = {p['name']: p['id'] for p in _pulse_locations(item, context)}
         if value is None:
             value = {"participation": "quiet"}
         world_state = item.get("world_state") or {}
@@ -253,6 +331,13 @@ async def _advance_world_pulse(
             participation = "quiet"
         active_reason = str(value.get("active_reason") or "").strip()
         active_source = str(value.get("active_source") or "").strip()
+        location_name = str(value.get("location") or character.get("location_name") or "").strip()
+        if (
+            participation == "active"
+            and location_name not in location_by_name
+            and location_name != (character.get("location_name") or "")
+        ):
+            participation = "quiet"
         if participation == "active" and not _active_reason_is_grounded(
             active_reason,
             active_source,
@@ -286,7 +371,6 @@ async def _advance_world_pulse(
                 "encounter_hook": "",
             }
             return character["id"], action
-        location_name = str(value.get("location") or character.get("location_name") or "").strip()
         availability = value.get("availability")
         if availability not in {"present", "reachable", "incoming", "unavailable"}:
             availability = "reachable"
@@ -336,12 +420,11 @@ async def _advance_world_pulse(
     )
     if transition is None:
         raise ValueError("世界这一刻没有成功向前，请再试一次")
-    observations = player_observation(context["player"], [entry["character"]["name"] for entry in context["characters"]])
-    if transition.get("player_condition") not in {None, "", observations.get("condition", "")}:
-        raise ValueError("这一刻夹带了未发生的玩家经历，请重新推进")
-    if any(trace not in observations.get("visible_traces", []) for trace in transition.get("visible_traces", [])):
-        raise ValueError("这一刻新增了没有来源的玩家痕迹，请重新推进")
+    if target_time:
+        transition["world_time"] = target_time
+    transition = resolve_transition_state(context, transition)
     transition["narration"] = await review_transition(client, context, visible_actions, transition, profile, target_time)
+    transition["ready_commitment_ids"] = clock["ready_commitment_ids"]
     result = store.commit_world_pulse(
         world_id,
         [event["id"] for event in context["pending_events"]],
@@ -357,7 +440,28 @@ async def _advance_world_pulse(
 
 async def advance_world_pulse(*, store: Store, client: ProviderClient,
                               profile: dict[str, Any], world_id: str,
-                              target_time: str = "") -> dict[str, Any]:
+                              target_time: str = "", preview_id: str | None = None) -> dict[str, Any]:
     with store.world_operation(world_id):
+        clock = store.time_preview(world_id) if preview_id else None
+        if preview_id and (not clock or clock["id"] != preview_id):
+            raise ValueError("时间预告已过期，请刷新后再推进")
         return await _advance_world_pulse(store=store, client=client, profile=profile,
-                                          world_id=world_id, target_time=target_time)
+                                          world_id=world_id, target_time=target_time, clock=clock)
+
+
+_preview_locks = {}
+
+async def prepare_time_preview(store, client, profile, world_id):
+    from uuid import uuid4
+    key=(str(store.path),world_id)
+    lock=_preview_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        existing=store.time_preview(world_id)
+        if existing: return existing
+        if world_id in store._active_worlds or store.pending_settlements(world_id):
+            raise ValueError("请等当前回合完成后规划下一时刻")
+        stamp=store.preview_fingerprint(world_id)
+        context=store.cognition_sync_context(world_id)
+        value=await appointment_time(store,client,context,profile)
+        value["id"]="preview_"+uuid4().hex
+        return store.save_time_preview(world_id,stamp,value)

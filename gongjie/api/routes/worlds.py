@@ -3,8 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from gongjie.api.errors import api_error
-from gongjie.api.schemas import CharacterInput, LocationInput, PulseInput, WorldInput, WorldResetInput
-from gongjie.cognition.pulse import advance_world_pulse
+from gongjie.api.schemas import PlayerProfileInput, CharacterInput, LocationInput, PulseInput, WorldInput, WorldResetInput
+from gongjie.cognition.pulse import advance_world_pulse, prepare_time_preview
 from gongjie.scenes.settlements import recover_settlements
 from gongjie.runtime import active_profile, provider_client, store
 
@@ -76,12 +76,12 @@ async def update_character(character_id: str, body: CharacterInput) -> dict:
 @router.post("/worlds/{world_id}/pulse")
 async def pulse(world_id: str, body: PulseInput) -> dict:
     try:
+        if not body.preview_id: raise ValueError("请等待下一时刻预告生成")
         return await advance_world_pulse(
             store=store,
             client=provider_client,
             profile=active_profile(),
-            world_id=world_id,
-            target_time=body.target_time,
+            world_id=world_id, preview_id=body.preview_id,
         )
     except Exception as error:
         raise api_error(error) from error
@@ -94,3 +94,36 @@ async def retry_settlements(world_id: str) -> dict:
         return await recover_settlements(store, provider_client, active_profile(), world_id)
     except Exception as error:
         raise api_error(error) from error
+
+
+@router.put("/worlds/{world_id}/player-profile")
+async def save_player_profile(world_id: str, body: PlayerProfileInput) -> dict:
+    try:
+        with store.world_operation(world_id):
+            return store.save_player_profile(world_id, body.model_dump())
+    except Exception as error:
+        raise api_error(error) from error
+
+
+@router.get("/worlds/{world_id}/saves")
+async def list_saves(world_id: str):
+    try: return store.list_saves(world_id)
+    except Exception as error: raise api_error(error) from error
+
+
+@router.post("/worlds/{world_id}/saves")
+async def save_world(world_id: str):
+    try: return store.save_world(world_id)
+    except Exception as error: raise api_error(error) from error
+
+
+@router.post("/worlds/{world_id}/saves/{save_id}/load")
+async def load_save(world_id: str, save_id: str):
+    try: return {"backup": store.load_world_save(world_id, save_id)}
+    except Exception as error: raise api_error(error) from error
+
+
+@router.post("/worlds/{world_id}/time-preview")
+async def time_preview(world_id: str):
+    try: return await prepare_time_preview(store, provider_client, active_profile(), world_id)
+    except Exception as error: raise api_error(error) from error

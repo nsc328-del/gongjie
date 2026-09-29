@@ -8,11 +8,17 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from gongjie.domain.knowledge import knowledge_projection, public_identity, player_observation
+from gongjie.domain.locations import known_locations, project_location_fields
+from gongjie.storage.geography import migrate as migrate_geography, commit_plan, reset_generated
 from gongjie.domain.patches import validate_patch
 from uuid import uuid4
 
+from gongjie.storage.worldbooks import load_worldbook
+from gongjie.storage import presence, information
+from gongjie.storage.location_knowledge import commit_mentions
 
-SCHEMA_VERSION = 11
+
+SCHEMA_VERSION = 17
 
 
 def now() -> str:
@@ -58,6 +64,10 @@ def _sanitize_world_time(value: str | None, fallback: str = "") -> str:
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS world_saves (id TEXT PRIMARY KEY,world_id TEXT NOT NULL,name TEXT NOT NULL,world_time TEXT NOT NULL,created_at TEXT NOT NULL,automatic INTEGER NOT NULL,payload TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS world_time_previews (world_id TEXT PRIMARY KEY REFERENCES worlds(id) ON DELETE CASCADE,fingerprint TEXT NOT NULL,payload TEXT NOT NULL);
 
 CREATE TABLE IF NOT EXISTS worlds (
     id TEXT PRIMARY KEY,
@@ -342,6 +352,11 @@ CREATE TABLE IF NOT EXISTS conversation_scene_entries (
     PRIMARY KEY(conversation_id, pulse_number)
 );
 
+CREATE TABLE IF NOT EXISTS player_profiles (
+    world_id TEXT PRIMARY KEY REFERENCES worlds(id) ON DELETE CASCADE,
+    profile TEXT NOT NULL DEFAULT '{}'
+);
+
 CREATE TABLE IF NOT EXISTS settlement_jobs (
     position INTEGER PRIMARY KEY AUTOINCREMENT,
     source_id TEXT NOT NULL UNIQUE,
@@ -411,6 +426,10 @@ class Store:
             job["context"] = _loads(job["context"], {})
         return job
 
+    def start_settlement(self, source_id: str) -> None:
+        with self.transaction() as connection:
+            connection.execute("UPDATE settlement_jobs SET status='pending',reason='' WHERE source_id=? AND status!='complete'", (source_id,))
+
     def fail_settlement(self, source_id: str, reason: str) -> None:
         with self.transaction() as connection:
             connection.execute(
@@ -474,11 +493,20 @@ class Store:
                 self._migrate_from_branches(connection)
             connection.executescript(SCHEMA)
             self._ensure_v4_columns(connection)
+            self._ensure_character_art(connection)
             self._ensure_v6_columns(connection)
             self._ensure_v7_baselines(connection)
             self._ensure_v8_flow(connection)
             if "evidence" not in {row[1] for row in connection.execute("PRAGMA table_info(turn_settlements)")}:
                 connection.execute("ALTER TABLE turn_settlements ADD COLUMN evidence TEXT NOT NULL DEFAULT '{}'")
+            if "decision" not in {row[1] for row in connection.execute("PRAGMA table_info(turn_settlements)")}:
+                connection.execute("ALTER TABLE turn_settlements ADD COLUMN decision TEXT NOT NULL DEFAULT '{}'")
+            if "ready_commitment_ids" not in {r[1] for r in connection.execute("PRAGMA table_info(world_flow_states)")}:
+                connection.execute("ALTER TABLE world_flow_states ADD COLUMN ready_commitment_ids TEXT NOT NULL DEFAULT '[]'")
+            migrate_geography(connection)
+            presence.migrate(connection)
+            information.migrate(connection)
+            information.migrate_saves(connection, SCHEMA_VERSION)
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             connection.commit()
         finally:
@@ -487,6 +515,18 @@ class Store:
             count = connection.execute("SELECT COUNT(*) FROM worlds").fetchone()[0]
         if count == 0:
             self._seed()
+
+    @staticmethod
+    def _ensure_character_art(connection: sqlite3.Connection) -> None:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(characters)")}
+        if "art_key" in columns:
+            return
+        connection.execute("ALTER TABLE characters ADD COLUMN art_key TEXT NOT NULL DEFAULT ''")
+        for character in load_worldbook("daylight")["characters"]:
+            connection.execute(
+                "UPDATE characters SET art_key=? WHERE name=? AND age=? AND persona=?",
+                (character.get("art_key", ""), character["name"], character["age"], character["persona"]),
+            )
 
     @staticmethod
     def _ensure_v4_columns(connection: sqlite3.Connection) -> None:
@@ -508,29 +548,10 @@ class Store:
             connection.execute(
                 "UPDATE worlds SET opening_narration=premise WHERE opening_narration=''"
             )
-            connection.execute(
-                """UPDATE worlds SET opening_narration=?
-                   WHERE id='world_velvet_harbor'""",
-                (
-                    "第七码头的钟声还没有响，雾压在绯港的屋檐下。夜航公馆仍亮着一扇窗，"
-                    "鸦色会所最后一轮酒还没有收，十三号码头的临时诊室也没有熄灯。"
-                    "今晚的三处相遇都还在等你走近。",
-                ),
-            )
         if added_character_opening:
             connection.execute(
                 "UPDATE characters SET opening_hook=tagline WHERE opening_hook=''"
             )
-            seed_hooks = {
-                "char_shenyan": "夜航公馆仍亮着一扇窗，沈砚在那里等着钟响；你此刻可以去见他。",
-                "char_cenye": "鸦色会所最后一轮酒还没有收，岑野也尚未离席；若要听懂今晚的暗流，可以从他开始。",
-                "char_linzhao": "十三号码头的雾最重，林照还在临时诊室；那里总是最先看见每一次归来。",
-            }
-            for character_id, opening_hook in seed_hooks.items():
-                connection.execute(
-                    "UPDATE characters SET opening_hook=? WHERE id=?",
-                    (opening_hook, character_id),
-                )
 
     @staticmethod
     def _ensure_v6_columns(connection: sqlite3.Connection) -> None:
@@ -791,90 +812,12 @@ class Store:
             connection.execute("PRAGMA foreign_keys = ON")
 
     def _seed(self) -> None:
-        created = now()
-        world_id = "world_velvet_harbor"
-        locations = [
-            ("loc_house", "夜航公馆", "临海旧宅，所有房间都记得曾经发生过的事。", "潮湿、安静、灯影低垂"),
-            ("loc_club", "鸦色会所", "只对熟客开放的地下会所，消息与欲望在这里等价交换。", "喧闹表面下的危险亲密"),
-            ("loc_pier", "十三号码头", "雾气终年不散，离开与归来都要从这里经过。", "海盐、锈迹、未说出口的决定"),
-        ]
-        characters = [
-            {
-                "id": "char_shenyan", "name": "沈砚", "age": 34, "pronouns": "他",
-                "role": "夜航公馆的主人", "tagline": "克制得越久，失控时越诚实。",
-                "opening_hook": "夜航公馆仍亮着一扇窗，沈砚在那里等着钟响；你此刻可以去见他。",
-                "persona": "沉静、精确、掌控欲强。很少解释自己，但会记住对方每一次细微退缩和靠近。不会无条件顺从，也不会轻易暴露嫉妒。",
-                "speech": "短句，低声，极少使用夸张语气；真正动摇时反而会叫对方的全名。",
-                "desire": {"control": 86, "devotion": 72, "jealousy": 68, "risk": 35, "tenderness": 63},
-                "behaviors": ["替对方收好散乱的东西", "在关键问题上沉默逼近", "用具体行动代替承诺"],
-                "loss": "不再给退路，但仍会观察对方每一个真实反应。", "location": "loc_house", "accent": "#b65e4b", "order": 0,
-            },
-            {
-                "id": "char_cenye", "name": "岑野", "age": 29, "pronouns": "他",
-                "role": "会所的情报掮客", "tagline": "把所有真话说得像玩笑。",
-                "opening_hook": "鸦色会所最后一轮酒还没有收，岑野也尚未离席；若要听懂今晚的暗流，可以从他开始。",
-                "persona": "敏锐、顽劣、喜欢试探边界。对秘密有职业性的耐心，对真正喜欢的人却缺乏耐心。享受三人关系里的不稳定平衡。",
-                "speech": "松弛、带笑、会故意曲解措辞；认真时会突然收掉所有玩笑。",
-                "desire": {"control": 42, "devotion": 54, "jealousy": 78, "risk": 91, "tenderness": 38},
-                "behaviors": ["借玩笑逼出真心", "在别人看不到时留下暗示", "主动制造必须选择的局面"],
-                "loss": "笑意消失，直接承认占有欲，并把选择推到眼前。", "location": "loc_club", "accent": "#8f6ac7", "order": 1,
-            },
-            {
-                "id": "char_linzhao", "name": "林照", "age": 31, "pronouns": "她",
-                "role": "十三号码头的医生", "tagline": "温柔不是退让，是她最锋利的控制。",
-                "opening_hook": "十三号码头的雾最重，林照还在临时诊室；那里总是最先看见每一次归来。",
-                "persona": "冷静、体贴、观察力近乎残酷。习惯照顾所有人，却不允许别人轻易看见自己的需要。知道沈砚与岑野的大部分旧事，但只说必要的部分。",
-                "speech": "温和而明确，擅长用一个问题改变谈话方向；愤怒时礼貌得近乎疏离。",
-                "desire": {"control": 67, "devotion": 84, "jealousy": 47, "risk": 52, "tenderness": 88},
-                "behaviors": ["先确认身体反应再追问情绪", "替人保守秘密但记得代价", "用照顾建立无法忽视的存在感"],
-                "loss": "停止替所有人留体面，坦白自己的需要并要求明确回应。", "location": "loc_pier", "accent": "#4d9085", "order": 2,
-            },
-        ]
+        self._create_world({}, load_worldbook("daylight"), world_id="world_daylight", preserve_ids=True)
         with self.transaction() as connection:
             connection.execute(
-                """INSERT INTO worlds(
-                       id,name,premise,atmosphere,rules,opening_narration,current_time,
-                       created_at,updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                (
-                    world_id, "绯港",
-                    "一座把秘密留得比人更久的海港。三名彼此牵连的成年人，各自与你拥有独立关系，却生活在同一条会被改写的时间线上。",
-                    "潮湿、华丽、危险、亲密",
-                    "所有角色均为成年人；角色拥有自主意志；发生过的事会改变关系、知识与之后的选择；意图不是事实。",
-                    "第七码头的钟声还没有响，雾压在绯港的屋檐下。夜航公馆仍亮着一扇窗，鸦色会所最后一轮酒还没有收，十三号码头的临时诊室也没有熄灯。今晚的三处相遇都还在等你走近。",
-                    "第七码头钟响前", created, created,
-                ),
+                "INSERT OR IGNORE INTO provider_profiles VALUES (?,?,?,?,?,?,?,?,?,?)",
+                ("provider_default", "我的模型", "openai-compatible", "https://api.openai.com", "/v1/chat/completions", "", 16384, 0.95, 1, now()),
             )
-            for order, (location_id, name, description, mood) in enumerate(locations):
-                connection.execute(
-                    "INSERT INTO locations VALUES (?,?,?,?,?,?)",
-                    (location_id, world_id, name, description, mood, order),
-                )
-            for item in characters:
-                connection.execute(
-                    """INSERT INTO characters(
-                           id,world_id,name,age,pronouns,role,tagline,opening_hook,persona,speech_style,
-                           desire_profile,signature_behaviors,loss_of_control,current_location_id,
-                           accent,sort_order,state_summary,summary_updated_at,created_at,updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        item["id"], world_id, item["name"], item["age"], item["pronouns"],
-                        item["role"], item["tagline"], item["opening_hook"], item["persona"], item["speech"],
-                        _json(item["desire"]), _json(item["behaviors"]), item["loss"],
-                        item["location"], item["accent"], item["order"], item["tagline"],
-                        None, created, created,
-                    ),
-                )
-                connection.execute(
-                    "INSERT INTO relationships VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    (uid("rel"), world_id, item["id"], None, 1, "未命名的牵引", 10, 18, 12, "关系会由共同经历塑形。", created),
-                )
-            connection.execute(
-                "INSERT INTO provider_profiles VALUES (?,?,?,?,?,?,?,?,?,?)",
-                ("provider_default", "我的模型", "openai-compatible", "https://api.openai.com", "/v1/chat/completions", "", 16384, 0.95, 1, created),
-            )
-            self._capture_reset_baseline(connection, world_id, created)
-            self._ensure_v8_flow(connection)
 
     @staticmethod
     def _character(row: sqlite3.Row) -> dict[str, Any]:
@@ -897,7 +840,7 @@ class Store:
     @staticmethod
     def _settlement(row: sqlite3.Row) -> dict[str, Any]:
         result = dict(row)
-        for key in ("scene", "relationship", "player", "evidence"):
+        for key in ("scene", "relationship", "player", "evidence", "decision"):
             result[key] = _loads(result.get(key), {})
         return result
 
@@ -961,9 +904,8 @@ class Store:
             if key in raw_scene:
                 scene[key] = string_list(raw_scene[key], limit, 160)
         for key in ("physical_state", "emotional_state"):
-            value = text(raw_scene.get(key), 200)
-            if value:
-                scene[key] = value
+            if key in raw_scene:
+                scene[key] = text(raw_scene[key], 200)
 
         raw_relationship = (
             patch.get("relationship")
@@ -989,7 +931,7 @@ class Store:
         player: dict[str, Any] = {}
         for key, limit in (("location_id", 120), ("location", 120), ("condition", 200)):
             value = text(raw_player.get(key), limit)
-            if value:
+            if value or (key == "condition" and key in raw_player):
                 player[key] = value
         if "visible_traces" in raw_player:
             player["visible_traces"] = string_list(raw_player["visible_traces"], 8, 160)
@@ -1030,6 +972,63 @@ class Store:
         )
         return settlement
 
+    def reject_settlement(self, source_id: str, reason: str, issues: list[str]) -> dict[str, Any]:
+        """Terminal decision without applying any part of an invalid proposal."""
+        with self.transaction() as connection:
+            existing = self._existing_patch_result(connection, source_id)
+            if existing:
+                return existing
+            job = connection.execute("SELECT * FROM settlement_jobs WHERE source_id=?", (source_id,)).fetchone()
+            if not job:
+                raise KeyError("settlement_not_found")
+            settlement = self._insert_turn_settlement(
+                connection, world_id=job["world_id"], conversation_id=job["conversation_id"],
+                room_id=job["room_id"], source_message_id=None if job["room_id"] else source_id,
+                source_room_message_id=source_id if job["room_id"] else None,
+                patch={}, created_at=now(),
+            )
+            decision = {"outcome": "rejected", "reason": reason, "issues": issues[:4]}
+            connection.execute("UPDATE turn_settlements SET decision=? WHERE id=?", (_json(decision), settlement["id"]))
+            settlement["decision"] = decision
+            return {"event_id": None, "record": None, "settlement": settlement}
+
+    def time_preview(self, world_id):
+        from gongjie.storage.previews import cached
+        with self.read() as c: return cached(c, world_id)
+
+    def preview_fingerprint(self, world_id):
+        from gongjie.storage.previews import fingerprint
+        with self.read() as c: return fingerprint(c, world_id)
+
+    def save_time_preview(self, world_id, fingerprint_value, value):
+        from gongjie.storage.previews import fingerprint
+        with self.transaction() as c:
+            world = c.execute('SELECT w.current_time FROM worlds w WHERE id=?', (world_id,)).fetchone()
+            if not world:
+                raise KeyError("world_not_found")
+            target = value.get("world_time")
+            if (not isinstance(target, str) or not target.strip() or len(target) > 120
+                    or not _sanitize_world_time(target) or target.strip() == world["current_time"].strip()):
+                raise ValueError("未能确定有效的下一时刻，请重新规划")
+            if fingerprint(c, world_id) != fingerprint_value: raise ValueError("世界已有变化，请刷新时间预告")
+            c.execute("INSERT OR REPLACE INTO world_time_previews VALUES (?,?,?)", (world_id,fingerprint_value,_json(value)))
+        return value
+
+    def list_saves(self, world_id):
+        self.get_world(world_id)
+        with self.read() as c:
+            return [dict(r) for r in c.execute("SELECT id,world_id,name,world_time,created_at,automatic FROM world_saves WHERE world_id=? ORDER BY created_at DESC,rowid DESC", (world_id,))]
+
+    def save_world(self, world_id, name=""):
+        from gongjie.storage.saves import insert_save
+        with self.world_operation(world_id), self.transaction() as c:
+            return insert_save(c, world_id, name)
+
+    def load_world_save(self, world_id, save_id):
+        from gongjie.storage.saves import restore
+        with self.world_operation(world_id), self.transaction() as c:
+            return restore(c, world_id, save_id)
+
     def list_worlds(self) -> list[dict[str, Any]]:
         with self.read() as connection:
             rows = connection.execute(
@@ -1042,78 +1041,62 @@ class Store:
         return [dict(row) for row in rows]
 
     def create_world(self, values: dict[str, Any]) -> dict[str, Any]:
-        world_id = uid("world")
-        created = now()
         template_id = values.get("template_id")
-        if template_id not in {None, "", "velvet_harbor"}:
-            raise ValueError("unknown_world_template")
-        defaults = {
-            "premise": "一座把秘密留得比人更久的海港。三名彼此牵连的成年人，各自与你拥有独立关系，却生活在同一条持续变化的时间线上。",
-            "atmosphere": "潮湿、华丽、危险、亲密",
-            "rules": "所有角色均为成年人；角色拥有自主意志；发生过的事会改变关系、知识与之后的选择；意图不是事实。",
-            "opening_narration": "第七码头的钟声还没有响，雾压在绯港的屋檐下。夜航公馆仍亮着一扇窗，鸦色会所最后一轮酒还没有收，十三号码头的临时诊室也没有熄灯。今晚的三处相遇都还在等你走近。",
-            "current_time": "第七码头钟响前",
-        } if template_id == "velvet_harbor" else {}
+        book = load_worldbook(template_id) if template_id else {"world": {}, "locations": [], "characters": [], "relationships": []}
+        return self._create_world(values, book)
+
+    def _create_world(
+        self, values: dict[str, Any], book: dict[str, Any], *,
+        world_id: str | None = None, preserve_ids: bool = False,
+    ) -> dict[str, Any]:
+        world_id = world_id or uid("world")
+        created = now()
+        defaults = book["world"]
+        fields = ("name", "premise", "atmosphere", "rules", "opening_narration", "current_time")
+        world = {key: str(values.get(key) or defaults.get(key, "")).strip() for key in fields}
+        if not world["name"]:
+            raise ValueError("world_name_empty")
+        locations = {item["id"]: item["id"] if preserve_ids else uid("loc") for item in book["locations"]}
+        characters = {item["id"]: item["id"] if preserve_ids else uid("char") for item in book["characters"]}
         with self.transaction() as connection:
             connection.execute(
-                """INSERT INTO worlds(
-                       id,name,premise,atmosphere,rules,opening_narration,current_time,
-                       created_at,updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                (
-                    world_id, values["name"].strip(),
-                    (values.get("premise") or defaults.get("premise", "")).strip(),
-                    (values.get("atmosphere") or defaults.get("atmosphere", "")).strip(),
-                    (values.get("rules") or defaults.get("rules", "")).strip(),
-                    (values.get("opening_narration") or defaults.get("opening_narration", "")).strip(),
-                    (values.get("current_time") or defaults.get("current_time", "")).strip(),
-                    created, created,
-                ),
+                "INSERT INTO worlds(id,name,premise,atmosphere,rules,opening_narration,current_time,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (world_id, *(world[key] for key in fields), created, created),
             )
-            if template_id == "velvet_harbor":
-                self._insert_velvet_template(connection, world_id, created)
+            for order, item in enumerate(book["locations"]):
+                connection.execute(
+                    "INSERT INTO locations(id,world_id,name,description,mood,sort_order) VALUES (?,?,?,?,?,?)",
+                    (locations[item["id"]], world_id, item["name"], item.get("description", ""), item.get("mood", ""), order),
+                )
+            for order, item in enumerate(book["characters"]):
+                connection.execute(
+                    """INSERT INTO characters(
+                        id,world_id,name,age,pronouns,role,tagline,opening_hook,persona,speech_style,
+                        desire_profile,signature_behaviors,loss_of_control,current_location_id,
+                        accent,sort_order,state_summary,created_at,updated_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (characters[item["id"]], world_id, item["name"], item["age"], item.get("pronouns", ""),
+                     item.get("role", ""), item.get("tagline", ""), item.get("opening_hook", ""),
+                     item.get("persona", ""), item.get("speech_style", ""), _json(item.get("desire_profile", {})),
+                     _json(item.get("signature_behaviors", [])), item.get("loss_of_control", ""),
+                     locations.get(item.get("current_location_id")), item.get("accent", "#668475"),
+                     order, item.get("tagline", ""), created, created),
+                )
+                connection.execute(
+                    "UPDATE characters SET art_key=? WHERE id=?",
+                    (item.get("art_key", ""), characters[item["id"]]),
+                )
+            for item in book["relationships"]:
+                connection.execute(
+                    "INSERT INTO relationships VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (uid("rel"), world_id, characters[item["from_character_id"]],
+                     characters.get(item.get("to_character_id")), int(item["to_user"]),
+                     item.get("label", ""), item.get("trust", 0), item.get("desire", 0),
+                     item.get("tension", 0), item.get("notes", ""), created),
+                )
             self._capture_reset_baseline(connection, world_id, created)
             self._ensure_v8_flow(connection)
         return self.get_world(world_id)
-
-    def _insert_velvet_template(
-        self, connection: sqlite3.Connection, world_id: str, created: str
-    ) -> None:
-        locations = [
-            ("夜航公馆", "临海旧宅，所有房间都记得曾经发生过的事。", "潮湿、安静、灯影低垂"),
-            ("鸦色会所", "只对熟客开放的地下会所，消息与欲望在这里等价交换。", "喧闹表面下的危险亲密"),
-            ("十三号码头", "雾气终年不散，离开与归来都要从这里经过。", "海盐、锈迹、未说出口的决定"),
-        ]
-        location_ids: list[str] = []
-        for order, (name, description, mood) in enumerate(locations):
-            location_id = uid("loc")
-            location_ids.append(location_id)
-            connection.execute(
-                "INSERT INTO locations VALUES (?,?,?,?,?,?)",
-                (location_id, world_id, name, description, mood, order),
-            )
-        characters = [
-            ("沈砚", 34, "他", "夜航公馆的主人", "克制得越久，失控时越诚实。", "夜航公馆仍亮着一扇窗，沈砚在那里等着钟响；你此刻可以去见他。", "沉静、精确、掌控欲强。很少解释自己，但会记住对方每一次细微退缩和靠近。不会无条件顺从，也不会轻易暴露嫉妒。", "短句，低声，真正动摇时会叫对方的全名。", {"control": 86, "devotion": 72, "jealousy": 68, "risk": 35, "tenderness": 63}, ["替对方收好散乱的东西", "在关键问题上沉默逼近", "用具体行动代替承诺"], "不再给退路，但仍会观察对方每一个真实反应。", "#b65e4b"),
-            ("岑野", 29, "他", "会所的情报掮客", "把所有真话说得像玩笑。", "鸦色会所最后一轮酒还没有收，岑野也尚未离席；若要听懂今晚的暗流，可以从他开始。", "敏锐、顽劣、喜欢试探边界。对秘密有职业性的耐心，对真正喜欢的人却缺乏耐心。", "松弛、带笑、会故意曲解措辞；认真时会突然收掉所有玩笑。", {"control": 42, "devotion": 54, "jealousy": 78, "risk": 91, "tenderness": 38}, ["借玩笑逼出真心", "在别人看不到时留下暗示", "主动制造必须选择的局面"], "笑意消失，直接承认占有欲，并把选择推到眼前。", "#8f6ac7"),
-            ("林照", 31, "她", "十三号码头的医生", "温柔不是退让，是她最锋利的控制。", "十三号码头的雾最重，林照还在临时诊室；那里总是最先看见每一次归来。", "冷静、体贴、观察力近乎残酷。习惯照顾所有人，却不允许别人轻易看见自己的需要。", "温和而明确，擅长用一个问题改变谈话方向；愤怒时礼貌得近乎疏离。", {"control": 67, "devotion": 84, "jealousy": 47, "risk": 52, "tenderness": 88}, ["先确认身体反应再追问情绪", "替人保守秘密但记得代价", "用照顾建立无法忽视的存在感"], "停止替所有人留体面，坦白自己的需要并要求明确回应。", "#4d9085"),
-        ]
-        for order, item in enumerate(characters):
-            name, age, pronouns, role, tagline, opening_hook, persona, speech, desire, behaviors, loss, accent = item
-            character_id = uid("char")
-            connection.execute(
-                """INSERT INTO characters(
-                       id,world_id,name,age,pronouns,role,tagline,opening_hook,persona,speech_style,
-                       desire_profile,signature_behaviors,loss_of_control,current_location_id,
-                       accent,sort_order,state_summary,summary_updated_at,created_at,updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (character_id, world_id, name, age, pronouns, role, tagline, opening_hook, persona, speech,
-                 _json(desire), _json(behaviors), loss, location_ids[order], accent, order,
-                 tagline, None, created, created),
-            )
-            connection.execute(
-                "INSERT INTO relationships VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (uid("rel"), world_id, character_id, None, 1, "未命名的牵引", 10, 18, 12, "关系会由共同经历塑形。", created),
-            )
 
     def update_world(self, world_id: str, values: dict[str, Any]) -> dict[str, Any]:
         allowed = ("name", "premise", "atmosphere", "rules", "opening_narration", "current_time")
@@ -1133,6 +1116,11 @@ class Store:
                 raise KeyError("world_not_found")
             if "current_time" in updates:
                 connection.execute(
+                    "UPDATE scene_states SET world_time=? WHERE conversation_id IN (SELECT id FROM conversations WHERE world_id=?)",
+                    (updates["current_time"], world_id),
+                )
+                connection.execute("UPDATE scene_rooms SET world_time=? WHERE world_id=?", (updates["current_time"], world_id))
+                connection.execute(
                     """UPDATE world_reset_baselines
                        SET current_time=?,captured_at=? WHERE world_id=?""",
                     (updates["current_time"], now(), world_id),
@@ -1149,7 +1137,7 @@ class Store:
                 (world_id,),
             ).fetchone()[0]
             connection.execute(
-                "INSERT INTO locations VALUES (?,?,?,?,?,?)",
+                "INSERT INTO locations(id,world_id,name,description,mood,sort_order) VALUES (?,?,?,?,?,?)",
                 (location_id, world_id, values["name"].strip(), values.get("description", "").strip(), values.get("mood", "").strip(), order),
             )
             row = connection.execute("SELECT * FROM locations WHERE id=?", (location_id,)).fetchone()
@@ -1239,6 +1227,7 @@ class Store:
             )
             baseline_updates: dict[str, Any] = {}
             if "current_location_id" in updates:
+                presence.clear_departed(connection, current["world_id"])
                 baseline_updates["current_location_id"] = updates["current_location_id"]
             if "tagline" in updates:
                 baseline_updates["state_summary"] = updates["tagline"]
@@ -1286,6 +1275,7 @@ class Store:
 
             connection.execute("DELETE FROM world_events WHERE world_id=?", (world_id,))
             connection.execute("DELETE FROM conversations WHERE world_id=?", (world_id,))
+            connection.execute("DELETE FROM player_scene_presence WHERE world_id=?", (world_id,))
             connection.execute("DELETE FROM scene_rooms WHERE world_id=?", (world_id,))
             connection.execute("DELETE FROM player_commitments WHERE world_id=?", (world_id,))
             connection.execute(
@@ -1340,7 +1330,7 @@ class Store:
             connection.execute(
                 """UPDATE world_flow_states
                    SET player_location_id=NULL,player_condition='',visible_traces='[]',
-                       pulse_narration='',pulse_number=0,updated_at=?
+                       pulse_narration='',pulse_number=0,ready_commitment_ids='[]',updated_at=?
                    WHERE world_id=?""",
                 (reset_at, world_id),
             )
@@ -1362,6 +1352,7 @@ class Store:
                    )""",
                 (reset_at, world_id),
             )
+            reset_generated(connection, world_id)
         return {"world": self.get_world(world_id), "cleared": counts}
 
     def get_world(self, world_id: str) -> dict[str, Any]:
@@ -1413,16 +1404,35 @@ class Store:
                 (world_id,),
             ).fetchall()
             player = self._player_state(flow, list(commitments))
+            ready = _loads(flow["ready_commitment_ids"], []) if flow else []
+            for promise in player["commitments"]:
+                promise["ready_to_visit"] = promise["id"] in ready
             pulse = {
                 "number": flow["pulse_number"] if flow else 0,
                 "narration": flow["pulse_narration"] if flow else "",
             }
         return {
-            "world": dict(world), "locations": locations, "characters": characters,
+            "world": dict(world), "player_profile": self.get_player_profile(world_id), "locations": locations, "characters": characters,
             "events": events, "relationships": relationships,
-            "pending_sync_count": pending_sync_count, "player": player, "pulse": pulse,
+            "pending_sync_count": pending_sync_count, "player": player, "pulse": pulse, "time_preview": self.time_preview(world_id),
             "pending_settlements": self.pending_settlements(world_id),
         }
+
+    def get_player_profile(self, world_id: str) -> dict[str, Any]:
+        with self.read() as connection:
+            row = connection.execute("SELECT profile FROM player_profiles WHERE world_id=?", (world_id,)).fetchone()
+        return _loads(row["profile"], {}) if row else {}
+
+    def save_player_profile(self, world_id: str, values: dict[str, Any]) -> dict[str, Any]:
+        profile = {key: values.get(key, "") for key in ("name", "pronouns", "appearance", "identity")}
+        profile["age"] = values.get("age")
+        if profile["age"] is not None and not 18 <= profile["age"] <= 999:
+            raise ValueError("玩家年龄必须成年")
+        with self.transaction() as connection:
+            if not connection.execute("SELECT 1 FROM worlds WHERE id=?", (world_id,)).fetchone():
+                raise KeyError("world_not_found")
+            connection.execute("INSERT INTO player_profiles(world_id,profile) VALUES (?,?) ON CONFLICT(world_id) DO UPDATE SET profile=excluded.profile", (world_id, _json(profile)))
+        return profile
 
     def get_character(self, character_id: str) -> dict[str, Any]:
         with self.read() as connection:
@@ -1467,6 +1477,7 @@ class Store:
                        updated_at=excluded.updated_at""",
                 (world_id, character["current_location_id"], entered_at),
             )
+            presence.enter_private(connection, world_id, character_id, entered_at)
             if existing:
                 return existing["id"]
             conversation_id = uid("conv")
@@ -1489,7 +1500,7 @@ class Store:
             if not conversation:
                 raise KeyError("conversation_not_found")
             messages = [dict(row) for row in connection.execute(
-                "SELECT * FROM messages WHERE conversation_id=? ORDER BY sequence",
+                "SELECT m.*, json_extract(t.decision, '$.outcome') AS settlement_outcome FROM messages m LEFT JOIN turn_settlements t ON t.source_message_id=m.id WHERE m.conversation_id=? ORDER BY m.sequence",
                 (conversation_id,),
             )]
             scene = self._scene(connection.execute(
@@ -1500,6 +1511,10 @@ class Store:
                    FROM characters c LEFT JOIN locations l ON l.id=c.current_location_id
                    WHERE c.id=?""", (conversation["character_id"],)
             ).fetchone())
+            scene["world_time"] = connection.execute(
+                "SELECT worlds.current_time FROM worlds WHERE id=?", (conversation["world_id"],)
+            ).fetchone()["current_time"]
+            scene["location_id"] = character["current_location_id"]
             knowledge = [dict(row) for row in connection.execute(
                 """SELECT k.*, e.title, e.details, e.world_time, e.visibility, l.name AS location_name
                    FROM character_knowledge k JOIN world_events e ON e.id=k.event_id
@@ -1507,6 +1522,10 @@ class Store:
                    WHERE k.character_id=? ORDER BY e.created_at DESC LIMIT 60""",
                 (character["id"],),
             )]
+            knowledge = information.restrict_room_knowledge(connection, knowledge, character['id'])
+            knowledge = [{**knowledge_projection(item), 'state':item.get('state') or item.get('knowledge_state'),
+                          'title':(knowledge_projection(item).get('details') or knowledge_projection(item).get('title',''))[:100]}
+                         for item in knowledge]
             records = [dict(row) for row in connection.execute(
                 """SELECT e.*, l.name AS location_name
                    FROM world_events e LEFT JOIN locations l ON l.id=e.location_id
@@ -1642,7 +1661,7 @@ class Store:
             if existing_entry:
                 return dict(existing_entry), False
             existing_messages = connection.execute(
-                "SELECT * FROM messages WHERE conversation_id=? ORDER BY sequence",
+                "SELECT m.*, json_extract(t.decision, '$.outcome') AS settlement_outcome FROM messages m LEFT JOIN turn_settlements t ON t.source_message_id=m.id WHERE m.conversation_id=? ORDER BY m.sequence",
                 (conversation_id,),
             ).fetchall()
             if pulse_number == 0 and existing_messages:
@@ -1711,8 +1730,22 @@ class Store:
             scene = self._scene(connection.execute(
                 "SELECT * FROM scene_states WHERE conversation_id=?", (conversation_id,)
             ).fetchone())
+            previous_row = connection.execute(
+                """SELECT t.scene,j.context FROM turn_settlements t JOIN messages m ON m.id=t.source_message_id
+                   LEFT JOIN settlement_jobs j ON j.source_id=t.source_message_id
+                   WHERE t.conversation_id=? AND json_extract(t.decision, '$.outcome') IS NOT 'rejected' ORDER BY m.sequence DESC LIMIT 1""", (conversation_id,),
+            ).fetchone()
+            previous_scene = dict(scene)
+            if previous_row:
+                previous_patch = _loads(previous_row["scene"], {})
+                previous_context = _loads(previous_row["context"], {})
+                previous_scene.update(previous_context.get("scene") or {})
+                previous_scene.update(previous_patch)
+                previous_scene["world_time"] = previous_patch.get("world_time") or (previous_context.get("world") or {}).get("current_time") or previous_scene.get("world_time") or ""
+            scene["world_time"] = world["current_time"]
+            scene["location_id"] = character.get("current_location_id")
             messages = [dict(row) for row in connection.execute(
-                "SELECT * FROM messages WHERE conversation_id=? ORDER BY sequence",
+                "SELECT m.*, json_extract(t.decision, '$.outcome') AS settlement_outcome FROM messages m LEFT JOIN turn_settlements t ON t.source_message_id=m.id WHERE m.conversation_id=? ORDER BY m.sequence",
                 (conversation_id,),
             )]
             public_events = [dict(row) for row in connection.execute(
@@ -1735,12 +1768,18 @@ class Store:
                        ORDER BY e.created_at DESC LIMIT 120
                    ) recent ORDER BY created_at""", (character["id"],)
             )]
+            public_events = information.restrict_room_knowledge(connection, public_events, character['id'])
+            knowledge = information.restrict_room_knowledge(connection, knowledge, character['id'])
             relationships = [dict(row) for row in connection.execute(
                 "SELECT * FROM relationships WHERE from_character_id=?", (character["id"],)
             )]
             locations = [dict(row) for row in connection.execute(
                 "SELECT * FROM locations WHERE world_id=? ORDER BY sort_order", (world["id"],)
             )]
+            locations = known_locations(locations, character['id'])
+            character = project_location_fields(character, locations, id_key='current_location_id')
+            scene = project_location_fields(scene, locations)
+            previous_scene = project_location_fields(previous_scene, locations)
             characters = [self._character(row) for row in connection.execute(
                 "SELECT * FROM characters WHERE world_id=? ORDER BY sort_order", (world["id"],)
             )]
@@ -1763,10 +1802,11 @@ class Store:
             ).fetchone()
         return {
             "conversation": dict(conversation), "world": world, "character": character,
-            "scene": scene, "messages": messages, "public_events": [knowledge_projection(item) for item in public_events],
+            "player_profile": self.get_player_profile(world["id"]),
+            "scene": scene, "previous_scene": previous_scene, "messages": messages, "public_events": [knowledge_projection(item) for item in public_events],
             "knowledge": [knowledge_projection(item) for item in knowledge], "relationships": relationships,
             "locations": locations, "characters": [public_identity(item) for item in characters],
-            "player": player_observation(self._player_state(player_row, list(commitments)), [item["name"] for item in characters]),
+            "player": player_observation(project_location_fields(self._player_state(player_row, list(commitments)), locations), [item["name"] for item in characters]),
             "pulse": {
                 "number": int(player_row["pulse_number"] if player_row else 0),
                 "narration": player_row["pulse_narration"] if player_row else "",
@@ -1844,14 +1884,14 @@ class Store:
             """UPDATE character_world_states
                SET surface_state=CASE WHEN ?!='' THEN ? ELSE surface_state END,
                    encounter_hook=CASE WHEN ?!='' THEN ? ELSE encounter_hook END,
-                   availability='present',interacted_since_pulse=1,updated_at=?
+                   availability=CASE WHEN (SELECT current_location_id FROM characters WHERE id=character_world_states.character_id) = ? THEN 'present' ELSE 'reachable' END,interacted_since_pulse=1,updated_at=?
                WHERE character_id=?""",
             (
                 str((patch.get("scene") or {}).get("emotional_state") or "").strip(),
                 str((patch.get("scene") or {}).get("emotional_state") or "").strip(),
                 str((patch.get("scene") or {}).get("physical_state") or "").strip(),
                 str((patch.get("scene") or {}).get("physical_state") or "").strip(),
-                updated_at, character_id,
+                effective_location, updated_at, character_id,
             ),
         )
 
@@ -1877,13 +1917,29 @@ class Store:
                        updated_at=excluded.updated_at""",
                 (room["world_id"], room["location_id"], entered_at),
             )
+            presence.enter_room(connection, world_id, room_id, entered_at)
         return self.get_room(room_id)
+
+    def assert_conversation_entry(self, conversation_id: str) -> None:
+        with self.read() as connection:
+            presence.assert_private(connection, conversation_id)
+
+    def assert_room_entry(self, room_id: str) -> None:
+        with self.read() as connection:
+            presence.assert_room(connection, room_id)
+
+    def room_is_current(self, room_id: str) -> bool:
+        with self.read() as connection:
+            return presence.room_is_current(connection, room_id)
 
     def apply_world_patch(
         self, conversation_id: str, source_message_id: str, patch: dict[str, Any],
         *, context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        context = context or self.context_for_turn(conversation_id)
+        if context is None:
+            context = self.context_for_turn(conversation_id)
+            source_index = next((i for i, m in enumerate(context["messages"]) if m["id"] == source_message_id), len(context["messages"]))
+            context["messages"] = context["messages"][:source_index]
         created = now()
         with self.transaction() as connection:
             conversation = connection.execute(
@@ -1903,6 +1959,8 @@ class Store:
             if existing:
                 return existing
             patch = validate_patch(patch, context, message["content"])
+            commit_mentions(connection, context, source_message_id)
+            commit_plan(connection, context, source_message_id, message["content"])
             character_id = conversation["character_id"]
             scene_patch = patch.get("scene") or {}
             if scene_patch:
@@ -1917,11 +1975,11 @@ class Store:
                     "SELECT * FROM scene_states WHERE conversation_id=?", (conversation_id,)
                 ).fetchone()
                 threads = scene_patch.get("active_threads")
-                effective_location = location_id or (current["location_id"] if current else None)
+                effective_location = location_id or context["scene"].get("location_id")
                 effective_time = _sanitize_world_time(
                     scene_patch.get("world_time"),
-                    (current["world_time"] if current else ""),
-                ) or (current["world_time"] if current else "")
+                    context["world"]["current_time"],
+                ) or context["world"]["current_time"]
                 connection.execute(
                     """INSERT INTO scene_states(conversation_id,location_id,world_time,tension,
                               active_threads,physical_state,emotional_state,updated_at)
@@ -1934,8 +1992,8 @@ class Store:
                         conversation_id, effective_location, effective_time,
                         max(0, min(100, int(scene_patch.get("tension", current["tension"] if current else 0)))),
                         _json(threads if isinstance(threads, list) else _loads(current["active_threads"], []) if current else []),
-                        scene_patch.get("physical_state") or (current["physical_state"] if current else ""),
-                        scene_patch.get("emotional_state") or (current["emotional_state"] if current else ""),
+                        scene_patch.get("physical_state", current["physical_state"] if current else ""),
+                        scene_patch.get("emotional_state", current["emotional_state"] if current else ""),
                         created,
                     ),
                 )
@@ -1944,6 +2002,7 @@ class Store:
                         "UPDATE characters SET current_location_id=?,updated_at=? WHERE id=?",
                         (effective_location, created, character_id),
                     )
+                    presence.clear_departed(connection, conversation["world_id"])
                 if effective_time:
                     connection.execute(
                         "UPDATE worlds SET current_time=?,updated_at=? WHERE id=?",
@@ -2110,21 +2169,25 @@ class Store:
                     )
                 }
                 relevant_pending = [
-                    knowledge_projection({**event, **known.get(event["id"], {})}) for event in pending
+                    {**event, **known.get(event["id"], {})} for event in pending
                     if event["visibility"] == "public" or event["id"] in known
                 ]
                 knowledge = [dict(item) for item in connection.execute(
-                    """SELECT e.title,e.details,e.world_time,e.visibility,k.state,k.belief,k.source
+                    """SELECT e.id,e.title,e.details,e.world_time,e.location_id,e.visibility,k.state,k.belief,k.source
                        FROM character_knowledge k JOIN world_events e ON e.id=k.event_id
                        WHERE k.character_id=? ORDER BY e.created_at DESC LIMIT 30""",
                     (character["id"],),
                 )]
+                relevant_pending = [knowledge_projection(item) for item in information.restrict_room_knowledge(connection,relevant_pending,character['id'])]
+                knowledge = information.restrict_room_knowledge(connection,knowledge,character['id'])
                 world_state = connection.execute(
                     "SELECT * FROM character_world_states WHERE character_id=?",
                     (character["id"],),
                 ).fetchone()
+                personal_locations = known_locations(locations, character['id'])
                 characters.append({
-                    "character": character,
+                    "character": project_location_fields(character, personal_locations, id_key='current_location_id'),
+                    "locations": personal_locations,
                     "relationship": dict(relationship) if relationship else {},
                     "new_events": relevant_pending,
                     "knowledge": [knowledge_projection(item) for item in knowledge],
@@ -2179,6 +2242,7 @@ class Store:
                 )
                 if result.rowcount:
                     updated_characters.append(character_id)
+            presence.clear_departed(connection, world_id)
             actual_event_ids = [event["id"] for event in events]
             if actual_event_ids:
                 actual_marks = ",".join("?" for _ in actual_event_ids)
@@ -2288,6 +2352,7 @@ class Store:
                     ),
                 )
                 updated_characters.append(character_id)
+            presence.clear_departed(connection, world_id)
             actual_event_ids = [event["id"] for event in events]
             if actual_event_ids:
                 actual_marks = ",".join("?" for _ in actual_event_ids)
@@ -2340,6 +2405,11 @@ class Store:
                     str(transition.get("narration") or "")[:800], pulse_number, updated_at,
                 ),
             )
+            valid_promises = {r[0] for r in connection.execute("SELECT id FROM player_commitments WHERE world_id=?", (world_id,))}
+            ready = transition.get("ready_commitment_ids", [])
+            if not isinstance(ready, list) or any(not isinstance(i, str) or i not in valid_promises for i in ready):
+                raise ValueError("赴约入口无效")
+            connection.execute("UPDATE world_flow_states SET ready_commitment_ids=? WHERE world_id=?", (_json(ready), world_id))
             connection.execute(
                 "UPDATE worlds SET updated_at=? WHERE id=?", (updated_at, world_id)
             )
@@ -2421,6 +2491,11 @@ class Store:
                 raise ValueError("room_members_required")
             if any(character_id not in valid for character_id in members):
                 raise ValueError("invalid_room_member")
+            if location_id is None:
+                player = connection.execute("SELECT player_location_id FROM world_flow_states WHERE world_id=?", (world_id,)).fetchone()
+                location_id = player["player_location_id"] if player else None
+                if location_id is None:
+                    location_id = connection.execute("SELECT current_location_id FROM characters WHERE id=?", (members[0],)).fetchone()[0]
             world_time = connection.execute(
                 "SELECT worlds.current_time FROM worlds WHERE id=?", (world_id,)
             ).fetchone()[0]
@@ -2439,6 +2514,7 @@ class Store:
                     "INSERT INTO room_characters VALUES (?,?,?)",
                     (room_id, character_id, order),
                 )
+            presence.gather_room(connection, world_id, room_id, location_id, members, created)
         return self.get_room(room_id)
 
     def delete_room(self, room_id: str) -> None:
@@ -2462,6 +2538,8 @@ class Store:
                    LEFT JOIN locations l ON l.id=c.current_location_id
                    WHERE rc.room_id=? ORDER BY rc.sort_order""", (room_id,)
             )]
+            present_ids = set(presence.member_ids(connection, room_id))
+            characters = [item for item in characters if item["id"] in present_ids]
             messages = [dict(row) for row in connection.execute(
                 """SELECT m.*, c.name AS character_name, c.accent AS character_accent
                    FROM room_messages m LEFT JOIN characters c ON c.id=m.character_id
@@ -2510,7 +2588,7 @@ class Store:
         scene = {
             "location_id": room_data.get("location_id"),
             "location_name": (location or {}).get("name"),
-            "world_time": room_data.get("world_time") or world.get("current_time") or "",
+            "world_time": world.get("current_time") or "",
             "tension": room_data.get("tension", 0),
             "active_threads": room_data.get("active_threads", []),
             "physical_state": room_data.get("physical_state", ""),
@@ -2527,6 +2605,7 @@ class Store:
     def add_room_message(
         self, room_id: str, role: str, character_id: str | None, content: str,
         *, settlement_context: dict[str, Any] | None = None,
+        observations: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         created = now()
         with self.transaction() as connection:
@@ -2541,6 +2620,8 @@ class Store:
                 "INSERT INTO room_messages VALUES (?,?,?,?,?,?,?,?)",
                 (message_id, room_id, role, character_id, content, sequence, created, created),
             )
+            world_id = connection.execute("SELECT world_id FROM scene_rooms WHERE id=?", (room_id,)).fetchone()[0]
+            information.add_message(connection, world_id, message_id, presence.member_ids(connection, room_id), observations)
             if settlement_context is not None:
                 if role != "assistant" or not content.strip():
                     raise ValueError("invalid_settlement_message")
@@ -2561,6 +2642,9 @@ class Store:
             room = connection.execute("SELECT * FROM scene_rooms WHERE id=?", (room_id,)).fetchone()
             if not room:
                 raise KeyError("room_not_found")
+            present_ids = set(presence.member_ids(connection, room_id))
+            if character_id not in present_ids:
+                raise ValueError("角色已经离开这个现场")
             world = dict(connection.execute(
                 "SELECT * FROM worlds WHERE id=?", (room["world_id"],)
             ).fetchone())
@@ -2579,12 +2663,18 @@ class Store:
             ).fetchone()) if room["location_id"] else None
             transcript = [dict(row) for row in connection.execute(
                 """SELECT * FROM (
-                       SELECT m.*, c.name AS character_name
+                       SELECT m.*, c.name AS character_name, json_extract(t.decision, '$.outcome') AS settlement_outcome
                        FROM room_messages m LEFT JOIN characters c ON c.id=m.character_id
+                       LEFT JOIN turn_settlements t ON t.source_room_message_id=m.id
                        WHERE m.room_id=? ORDER BY m.sequence DESC LIMIT 60
                    ) recent ORDER BY sequence""",
                 (room_id,),
             )]
+            turn_user_id = next((m['id'] for m in reversed(transcript) if m['role']=='user'), None)
+            transcript = information.project_messages(connection, transcript, character_id)
+            view_row = connection.execute('SELECT views FROM room_message_visibility WHERE message_id=?', (turn_user_id,)).fetchone()
+            user_views = _loads(view_row['views'], {}) if view_row else {}
+            own_scene = information.personal_state(connection, room_id, character_id)
             public_events = [dict(row) for row in connection.execute(
                 """SELECT * FROM (
                        SELECT e.*, k.state AS knowledge_state, k.belief, k.source,
@@ -2605,18 +2695,23 @@ class Store:
                        ORDER BY e.created_at DESC LIMIT 80
                    ) recent ORDER BY created_at""", (character_id,)
             )]
+            public_events = information.restrict_room_knowledge(connection, public_events, character['id'])
+            knowledge = information.restrict_room_knowledge(connection, knowledge, character['id'])
             relationships = [dict(row) for row in connection.execute(
                 "SELECT * FROM relationships WHERE from_character_id=?", (character_id,)
             )]
             locations = [dict(row) for row in connection.execute(
                 "SELECT * FROM locations WHERE world_id=? ORDER BY sort_order", (world["id"],)
             )]
+            locations = known_locations(locations, character['id'])
+            character = project_location_fields(character, locations, id_key='current_location_id')
             room_characters = [self._character(row) for row in connection.execute(
                 """SELECT c.* FROM room_characters rc
                    JOIN characters c ON c.id=rc.character_id
                    WHERE rc.room_id=? ORDER BY rc.sort_order""",
                 (room_id,),
             )]
+            room_characters = [item for item in room_characters if item["id"] in present_ids]
             player_row = connection.execute(
                 """SELECT f.*,l.name AS player_location_name
                    FROM world_flow_states f LEFT JOIN locations l ON l.id=f.player_location_id
@@ -2638,19 +2733,23 @@ class Store:
         scene = {
             "location_id": (room_location or {}).get("id"),
             "location_name": (room_location or {}).get("name") or character.get("location_name"),
-            "world_time": room["world_time"] or world.get("current_time") or "",
-            "tension": room["tension"],
-            "active_threads": _loads(room["active_threads"], []),
-            "physical_state": room["physical_state"],
-            "emotional_state": room["emotional_state"],
+            "world_time": world.get("current_time") or "",
+            "tension": own_scene.get("tension", 0),
+            "active_threads": own_scene.get("active_threads", []),
+            "physical_state": own_scene.get("physical_state", ""),
+            "emotional_state": own_scene.get("emotional_state", ""),
         }
+        scene = project_location_fields(scene, locations)
         return {
-            "room": dict(room), "world": world, "character": character,
+            "room": {k:room[k] for k in ('id','name','world_id','location_id')},
+            "turn_user_id": turn_user_id,
+            "observation_sources": {cid:{'user':text} for cid,text in user_views.items()}, "world": world, "character": character,
+            "player_profile": self.get_player_profile(world["id"]),
             "scene": scene, "messages": transcript, "public_events": [knowledge_projection(item) for item in public_events],
             "knowledge": [knowledge_projection(item) for item in knowledge], "relationships": relationships,
             "locations": locations, "characters": [public_identity(item) for item in room_characters],
             "room_characters": [public_identity(item) for item in room_characters],
-            "player": player_observation(self._player_state(player_row, list(commitments)), world_names),
+            "player": player_observation(project_location_fields(self._player_state(player_row, list(commitments)), locations), world_names),
             "character_world_state": dict(world_state) if world_state else {},
         }
 
@@ -2687,7 +2786,10 @@ class Store:
             existing = self._existing_patch_result(connection, source_message_id)
             if existing:
                 return existing
+            context = information.recovery_context(connection,context,source_message_id)
             patch = validate_patch(patch, context, source_message["content"])
+            commit_mentions(connection, context, source_message_id)
+            commit_plan(connection, context, source_message_id, source_message["content"])
             scene_patch = patch.get("scene") or {}
             world_time = _sanitize_world_time(scene_patch.get("world_time"))
             location_id = room["location_id"]
@@ -2706,31 +2808,16 @@ class Store:
                 ).fetchone()
                 if found:
                     location_id = found["id"]
-            threads = scene_patch.get("active_threads")
-            effective_threads = (
-                threads if isinstance(threads, list)
-                else _loads(room["active_threads"], [])
-            )
-            effective_world_time = (
-                world_time or room["world_time"] or connection.execute(
-                    "SELECT worlds.current_time FROM worlds WHERE id=?", (world_id,)
-                ).fetchone()[0]
-            )
-            connection.execute(
-                """UPDATE scene_rooms SET location_id=?,world_time=?,tension=?,
-                          active_threads=?,physical_state=?,emotional_state=?,updated_at=?
-                   WHERE id=?""",
-                (
-                    location_id,
-                    effective_world_time,
-                    max(0, min(100, int(scene_patch.get("tension", room["tension"])))),
-                    _json(effective_threads[:4]),
-                    scene_patch.get("physical_state") or room["physical_state"],
-                    scene_patch.get("emotional_state") or room["emotional_state"],
-                    created,
-                    room_id,
-                ),
-            )
+            effective_world_time = world_time or context['world']['current_time']
+            departed = location_id != room["location_id"]
+            information.save_personal_state(connection, world_id, room_id, character_id, scene_patch)
+            room_world_time = world_time or connection.execute(
+                "SELECT worlds.current_time FROM worlds WHERE id=?", (world_id,),
+            ).fetchone()["current_time"]
+            connection.execute("UPDATE scene_rooms SET world_time=?,updated_at=? WHERE id=?", (room_world_time,created,room_id))
+            connection.execute("UPDATE characters SET current_location_id=?,updated_at=? WHERE id=?", (location_id, created, character_id))
+            if departed:
+                presence.enter_private(connection, world_id, character_id, created)
             if world_time:
                 connection.execute(
                     "UPDATE worlds SET current_time=?,updated_at=? WHERE id=?",
@@ -2763,12 +2850,7 @@ class Store:
                     (event_id, room_id, source_message_id),
                 )
                 character_by_name = {
-                    row["name"]: row["id"] for row in connection.execute(
-                        """SELECT c.id,c.name FROM room_characters rc
-                           JOIN characters c ON c.id=rc.character_id
-                           WHERE rc.room_id=?""",
-                        (room_id,),
-                    )
+                    item["name"]: item["id"] for item in context["room_characters"]
                 }
                 participant_ids = {character_id}
                 for name in event.get("participants", []):
@@ -2826,7 +2908,7 @@ class Store:
                 connection,
                 world_id=world_id,
                 character_id=character_id,
-                scene_location_id=location_id,
+                scene_location_id=None,
                 patch=patch,
                 updated_at=created,
             )

@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from gongjie.ai.providers import ContextMessage, ProviderClient, RequestContext
+from gongjie.domain.knowledge import knowledge_projection
 from gongjie.storage.store import Store
 
 
@@ -20,6 +21,7 @@ def summary_context(
     knowledge = item.get("knowledge") or []
     system = """你负责为共享世界中的一名角色更新状态卡片。你不是角色本人，不续写剧情，也不创造新事实。
 你只能依据提供给该角色的认知生成一句中文状态摘要。摘要描述角色此刻可被玩家从外部感受到的姿态、余波或关系倾向；即使变化来自私密事实，也不能复述或暗示那件私密事实的具体内容。不要泄露秘密计划，不使用数值、系统字段或开发者术语。
+每项认知保留其 knowledge_state、belief 和 source。heard 只证明听到这些话；believed、misunderstood 只是角色所信版本，不把它们改写为客观事实，也不补全来源没有包含的内容。
 只返回一句话，20到55个中文字符，不要引号、标题、解释或 Markdown。"""
     payload = {
         "世界": {
@@ -40,23 +42,8 @@ def summary_context(
             "欲望": relationship.get("desire", 0),
             "张力": relationship.get("tension", 0),
         },
-        "本次新获得或亲历的事实": [
-            {
-                "标题": event["title"],
-                "事实": event["details"],
-                "时间": event.get("world_time", ""),
-                "地点": event.get("location_name", ""),
-            }
-            for event in new_events
-        ],
-        "此前认知": [
-            {
-                "标题": entry["title"],
-                "版本": entry.get("belief") or entry["details"],
-                "来源": entry.get("source", ""),
-            }
-            for entry in knowledge[:20]
-        ],
+        "本次获得的认知": [knowledge_projection(event) for event in new_events],
+        "此前认知": [knowledge_projection(entry) for entry in knowledge[:20]],
     }
     return RequestContext(
         system=system,

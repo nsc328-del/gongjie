@@ -49,6 +49,7 @@ async def opening(conversation_id: str) -> dict:
                 "pulse_number": current["pulse"]["number"],
             }
         with store.world_operation(current["conversation"]["world_id"]):
+            store.assert_conversation_entry(conversation_id)
             profile = active_profile()
             context = store.context_for_turn(conversation_id)
             reentry = bool(current["messages"])

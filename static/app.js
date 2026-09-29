@@ -1,5 +1,5 @@
 const state = {
-  worlds: [], world: null, provider: null,
+  spaceId: null, worlds: [], world: null, provider: null, templates: [],
   screen: "library", view: "world",
   conversation: null, character: null,
   rooms: [], room: null, roomStreaming: false,
@@ -10,8 +10,8 @@ const state = {
   playingWorldIntro: false,
   editingWorldId: null, editingCharacterId: null,
   navigation: 0, worldRefresh: 0,
-  advanceCustom: new Map(), worldActivities: new Map(), liveTurns: new Map(), liveRooms: new Map(),
-  viewMemory: new Map(), advanceChoices: new Map(),
+  worldActivities: new Map(), liveTurns: new Map(), liveRooms: new Map(),
+  viewMemory: new Map(),
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -26,6 +26,7 @@ function worldBusy(worldId = state.world?.world.id) {
 }
 
 function setActivity(worldId, label = "") {
+  if (label && !worldBusy(worldId)) invalidateTimePreview(worldId);
   if (label) state.worldActivities.set(worldId, label);
   else state.worldActivities.delete(worldId);
   const current = state.worldActivities.get(state.world?.world.id) || "";
@@ -81,9 +82,9 @@ function restoreView(root, key) {
     const id = `${message?.dataset.messageId || message?.dataset.roomMessageId || ""}:${detail.className}`;
     if (memory?.openDetails.includes(id)) detail.open = true;
   }
+  scroller.scrollTop = memory && !memory.end ? memory.top : (scroller === root ? memory?.top || 0 : scroller.scrollHeight);
   requestAnimationFrame(() => {
     if (root.dataset.viewKey !== key) return;
-    scroller.scrollTop = memory && !memory.end ? memory.top : (scroller === root ? memory?.top || 0 : scroller.scrollHeight);
     if (input && memory?.focused && root.classList.contains("active") && !input.disabled && !$("dialog[open]")) {
       input.focus({preventScroll:true});
       input.setSelectionRange(memory.start ?? input.value.length, memory.finish ?? input.value.length);
@@ -187,13 +188,34 @@ function refreshDesireHints() {
   });
 }
 
+function appPath(path) {
+  return new URL(path.replace(/^\//, ""), window.location.href).href;
+}
+
+async function appFetch(path, options = {}) {
+  const headers = {...(options.headers || {})};
+  if (state.spaceId) headers["X-Gongjie-Space"] = state.spaceId;
+  const response = await fetch(appPath(path), {...options, headers});
+  if (response.status === 401 || response.headers?.get("X-Gongjie-Session") === "changed") {
+    window.location.replace(appPath("/"));
+    throw new Error("存档登录状态已变化，正在重新载入");
+  }
+  return response;
+}
+
 async function api(path, options = {}) {
-  const response = await fetch(path, {headers:{"Content-Type":"application/json", ...(options.headers || {})}, ...options});
+  const response = await appFetch(path, {...options, headers:{"Content-Type":"application/json", ...(options.headers || {})}});
   if (!response.ok) {
     let detail = "请求失败";
     try {
       const body = await response.json();
-      detail = typeof body.detail === "string" ? body.detail : (body.detail?.message || detail);
+      detail = typeof body.detail === "string" ? body.detail : (Array.isArray(body.detail) ? body.detail.map(item => {
+        const label = ({name:"名称",age:"年龄",protocol:"连接方式",max_tokens:"回复长度",temperature:"温度",target_time:"目标时刻"})[item.loc?.[1]] || "输入内容";
+        if (item.type === "string_too_short") return `${label}不能为空`;
+        if (item.type === "greater_than_equal") return `${label}不能小于${item.ctx.ge}`;
+        if (item.type === "less_than_equal") return `${label}不能大于${item.ctx.le}`;
+        return `${label}填写有误，请检查`;
+      }).join("；") : body.detail?.message || detail);
     } catch {}
     throw new Error(detail);
   }
@@ -233,9 +255,36 @@ function toast(message) {
   toast.timer = setTimeout(() => node.classList.remove("show"), 2600);
 }
 
+const CHARACTER_ART = {
+  daylight_lorne: {file:"lorne", x:50, y:8},
+  daylight_severin: {file:"severin", x:50, y:2},
+  daylight_evelyn: {file:"evelyn", x:45, y:4},
+  daylight_vesper: {file:"vesper", x:51, y:0},
+};
+function characterArt(character) {
+  const art = CHARACTER_ART[character.art_key];
+  return art ? {...art, url:appPath(`/static/characters/daylight/${art.file}.jpg`)} : null;
+}
 function avatar(character, size = "") {
   const accent = /^#[0-9a-f]{6}$/i.test(character.accent || "") ? character.accent : "#bc5d45";
-  return `<span class="avatar ${size}" style="--accent:${accent}">${escapeHTML(character.name?.slice(0,1) || "·")}</span>`;
+  const art = characterArt(character);
+  return `<span class="avatar ${size} ${art ? "illustrated" : ""}" style="--accent:${accent};${art ? `--face-x:${art.x}%;--face-y:${art.y}%` : ""}">${art ? `<img src="${art.url}" alt="" loading="lazy" decoding="async">` : escapeHTML(character.name?.slice(0,1) || "·")}</span>`;
+}
+function openCharacterPortrait(characterId) {
+  const character = state.world?.characters.find(item => item.id === characterId);
+  if (!character) return;
+  const art = characterArt(character);
+  const dialog = $("#portrait-dialog");
+  $("#portrait-title").textContent = character.name;
+  $("#portrait-role").textContent = `${character.role} · ${character.age} 岁`;
+  $("#portrait-tagline").textContent = character.tagline || "";
+  $("#portrait-art").innerHTML = art ? `<img src="${art.url}" alt="${escapeHTML(character.name)}的完整立绘">` : avatar(character, "large");
+  dialog.classList.toggle("has-art", Boolean(art));
+  const enter = $("#portrait-enter");
+  enter.textContent = effectiveAvailability(character) === "unavailable" ? "暂时无法相遇" : `去见${character.pronouns === "她" ? "她" : "他"}`;
+  enter.disabled = effectiveAvailability(character) === "unavailable" || worldBusy() || Boolean(pendingSettlements().length);
+  enter.onclick = () => { closeDialog("#portrait-dialog"); openCharacter(character.id); };
+  showDialog("#portrait-dialog");
 }
 
 function relationshipFor(characterId) {
@@ -246,6 +295,10 @@ async function bootstrap() {
   const data = await api("/api/bootstrap");
   state.worlds = data.worlds;
   state.provider = data.provider;
+  state.templates = data.templates;
+  state.spaceId = data.space_id;
+  $("#space-controls").hidden = !data.access_enabled;
+  $("#space-label").textContent = data.space_label || "";
   renderProviderState();
   renderLibrary();
   showLibrary(false);
@@ -256,6 +309,10 @@ async function refreshBootstrap() {
   const data = await api("/api/bootstrap");
   state.worlds = data.worlds;
   state.provider = data.provider;
+  state.templates = data.templates;
+  state.spaceId = data.space_id;
+  $("#space-controls").hidden = !data.access_enabled;
+  $("#space-label").textContent = data.space_label || "";
   renderProviderState();
   renderLibrary();
 }
@@ -297,12 +354,14 @@ function showLibrary(refresh = true) {
 
 async function openWorld(worldId) {
   const token = beginNavigation();
+  ++state.worldRefresh;
+  invalidateTimePreview(worldId);
   try {
     const [world, roomsData] = await Promise.all([
       api(`/api/worlds/${worldId}`), api(`/api/worlds/${worldId}/rooms`),
     ]);
     if (token !== state.navigation) return;
-    state.world = world; state.rooms = roomsData.rooms || [];
+    state.world = world; state.rooms = roomsData.rooms || []; previewErrors.delete(worldId);
     state.conversation = null; state.character = null; state.room = null;
     state.screen = "world"; state.view = "world";
     state.playingWorldIntro = !reducedMotion.matches;
@@ -321,12 +380,13 @@ async function openWorld(worldId) {
 
 async function refreshWorld(worldId = state.world?.world.id) {
   if (!worldId) return;
+  invalidateTimePreview(worldId);
   const revision = ++state.worldRefresh;
   const [world, roomsData] = await Promise.all([
     api(`/api/worlds/${worldId}`), api(`/api/worlds/${worldId}/rooms`),
   ]);
   if (state.world?.world.id !== worldId || revision !== state.worldRefresh) return;
-  state.world = world; state.rooms = roomsData.rooms || [];
+  state.world = world; state.rooms = roomsData.rooms || []; previewErrors.delete(worldId);
   if (state.character) state.character = world.characters.find(item => item.id === state.character.id) || state.character;
   renderShell();
   if (state.view === "world") { renderWorld(); renderWorldInspector(); }
@@ -353,12 +413,37 @@ function renderShell() {
 
 function pendingSettlements() {
   const data = state.view === "chat" ? state.conversation : state.view === "room" ? state.room : state.world;
-  return [...new Map([...(state.world?.pending_settlements || []), ...(data?.pending_settlements || [])].map(job => [job.id, job])).values()];
+  return [...new Map([...(state.world?.pending_settlements || []), ...(data?.pending_settlements || [])].map(job => [job.source_id || job.id, job])).values()];
 }
 
 function settlementRecoveryHTML(job = null) {
   if (!job && !pendingSettlements().length) return "";
+  const first = pendingSettlements()[0] || job;
+  if (first?.status === "pending") {
+    watchSettlementProgress();
+    return `<div class="settlement-recovery" role="status"><span>世界正在留下痕迹</span></div>`;
+  }
   return `<div class="settlement-recovery" role="status"><span>${state.recovering ? "世界正在留下痕迹" : "还有未记下的余波"}</span><button class="soft-button" data-action="retry-settlements" ${state.recovering || worldBusy() ? "disabled" : ""}>${state.recovering ? "正在记录…" : "重新记录"}</button></div>`;
+}
+
+function watchSettlementProgress() {
+  if (state.settlementTimer || worldBusy() || state.recovering) return;
+  const worldId = state.world?.world.id;
+  state.settlementTimer = setTimeout(async () => {
+    state.settlementTimer = null;
+    if (state.world?.world.id !== worldId || worldBusy() || state.recovering) return;
+    try {
+      await refreshWorld(worldId);
+      if (state.world?.world.id !== worldId) return;
+      if (state.conversation) await reloadConversation();
+      if (state.room) {
+        const roomId = state.room.room.id;
+        const data = await api(`/api/rooms/${roomId}`);
+        if (state.room?.room.id === roomId) state.room = data;
+      }
+    } catch { /* A later refresh can resume observing the persisted task. */ }
+    renderCurrent();
+  }, 3000);
 }
 
 async function retrySettlements() {
@@ -397,6 +482,9 @@ function renderWorld() {
     ["incoming", "正在靠近的人"],
     ["unavailable", "暂时错过"],
   ];
+  const hasProgress = characters.some(character => character.has_messages);
+  const heroLabel = pulse.narration ? "本时段开场" : hasProgress ? "世界背景" : "故事开场";
+  const heroText = pulse.narration || (hasProgress ? world.premise : world.opening_narration || world.premise) || "这一刻还没有落笔。";
   let cardIndex = 0;
   const encounterSections = encounterGroups.map(([key, title]) => {
     const members = characters.filter(character => effectiveAvailability(character, player) === key);
@@ -406,7 +494,7 @@ function renderWorld() {
   }).join("");
   $("#world-view").innerHTML = `<div class="world-wrap ${state.playingWorldIntro ? "entering" : ""}">
     <article class="world-hero">
-      <div class="world-hero-copy"><span class="stage-eyebrow">此刻发生</span><h2>${escapeHTML(world.current_time || world.name)}</h2><p>${escapeHTML(pulse.narration || world.opening_narration || world.premise || "这一刻还没有落笔。")}</p></div>
+      <div class="world-hero-copy"><span class="stage-eyebrow">${heroLabel}</span><h2>${escapeHTML(world.current_time || world.name)}</h2><p>${escapeHTML(heroText)}</p></div>
       <div class="world-hero-time"><small>${escapeHTML(world.atmosphere || "共享世界")}</small><strong>${escapeHTML(world.name)}</strong></div>
       <div class="world-gate" aria-hidden="true"><i></i><i></i><i></i><span></span></div>
     </article>
@@ -415,6 +503,7 @@ function renderWorld() {
     <section class="player-presence world-secondary">
       <div class="player-presence-mark"><i></i><span>你</span></div>
       <div class="player-presence-main"><span class="stage-eyebrow">此刻的你</span><h3>${escapeHTML(player.location_name || "尚未走进某个现场")}</h3><p>${escapeHTML(player.condition || "还没有留下足以被旁人察觉的变化。")}</p></div>
+      <button class="soft-button" data-action="edit-player">我的角色</button>
       <div class="player-presence-details">
         ${playerTraces.length ? `<div><small>带在身上的痕迹</small>${playerTraces.map(item => `<span>${escapeHTML(item)}</span>`).join("")}</div>` : ""}
         ${playerPromises.length ? `<div><small>还悬着的承诺</small>${playerPromises.map(promiseHTML).join("")}</div>` : ""}
@@ -429,8 +518,8 @@ function renderWorld() {
 
     <section class="sync-panel world-secondary ${pending ? "waiting" : "quiet"} ${state.pulsing ? "pulsing" : ""}">
       <div class="sync-orbit"><i></i><i></i><i></i></div>
-      <div><span class="stage-eyebrow">WORLD PULSE</span><h3>${state.pulsing ? "所有人都在决定下一步" : pending ? `${pending} 件余波正等着世界回应` : "这一刻还可以继续，也可以向前"}</h3></div>
-      <button id="pulse-world" class="primary-button" ${worldBusy() || pendingSettlements().length || state.recovering ? "disabled" : ""}>${state.pulsing ? "世界正在向前…" : "让这一刻继续"}</button>
+      <div><span class="stage-eyebrow">WORLD PULSE</span><h3>${state.pulsing ? "所有人都在决定下一步" : pending ? `${pending} 件余波正等着世界回应` : "这一刻还可以继续，也可以向前"}</h3>${timePreviewHTML()}</div>
+      <button id="pulse-world" class="primary-button" ${!state.world.time_preview || worldBusy() || pendingSettlements().length || state.recovering ? "disabled" : ""}>${state.pulsing ? "世界正在向前…" : "让这一刻继续"}</button>
     </section>
 
     <div class="world-columns world-secondary">
@@ -450,19 +539,21 @@ function renderWorld() {
   $$('[data-room]').forEach(card => card.onclick = () => openRoom(card.dataset.room));
   $("#pulse-world")?.addEventListener("click", advanceWorld);
   restoreView($("#world-view"), viewKey("world"));
+  ensureTimePreview();
 }
 
 function promiseHTML(item) {
   const character = state.world.characters.find(person => person.id === item.character_id);
-  const available = character && effectiveAvailability(character) !== "unavailable";
-  return `<span class="player-promise"><span>${escapeHTML(item.text)}</span>${available
-    ? `<button data-world-character="${character.id}">去见${escapeHTML(character.name)} ↗</button>`
+  const available = item.ready_to_visit && character && effectiveAvailability(character) !== "unavailable";
+  return `<span class="player-promise"><span>${escapeHTML(item.text)}<small class="promise-time">${escapeHTML(state.world.time_preview ? (state.world.time_preview.appointment_times?.[item.id] || "时间未定") : "约定时间待确认")} · ${item.ready_to_visit ? "可赴约" : "待赴约"}</small></span>${available
+    ? `<button data-world-character="${character.id}">前往赴约 ↗</button>`
     : item.character_name ? `<small>${escapeHTML(item.character_name)}</small>` : ""}</span>`;
 }
 
 function effectiveAvailability(character, player = state.world?.player || {}) {
+  if (character.availability === "unavailable") return "unavailable";
   if (player.location_id && character.current_location_id === player.location_id) return "present";
-  return character.availability || "reachable";
+  return character.availability === "present" ? "reachable" : character.availability || "reachable";
 }
 
 function roomCard(room) {
@@ -495,11 +586,13 @@ async function openRoom(roomId) {
   if (state.view === "room" && state.room?.room.id === roomId) return;
   const worldId = state.world.world.id;
   const token = beginNavigation();
+  invalidateTimePreview(worldId);
   try {
     const room = await api(`/api/rooms/${roomId}/enter`, {method:"POST", body:"{}"});
+    const world = await api(`/api/worlds/${worldId}`);
     if (token !== state.navigation || state.world?.world.id !== worldId) return;
     if (!worldBusy(worldId)) state.liveRooms.delete(roomId);
-    state.room = room; state.world.player = room.player;
+    state.room = room; state.world = world;
     state.conversation = null; state.character = null; state.view = "room";
     renderShell(); renderRoom(); renderRoomInspector(); showView("room");
   } catch (error) { if (token === state.navigation) toast(error.message); }
@@ -510,7 +603,7 @@ function renderRoom() {
   rememberView($("#room-view"));
   const data = mergeLive(state.room, state.liveRooms.get(state.room.room.id));
   const room = data.room;
-  const inputLocked = state.liveRooms.has(room.id) && !state.liveRooms.get(room.id).drafting;
+  const inputLocked = state.liveRooms.has(room.id) && !state.liveRooms.get(room.id).finished && !state.liveRooms.get(room.id).drafting;
   const turnLocked = worldBusy() || pendingSettlements().length || state.recovering;
   const draft = state.roomDrafts.get(room.id) || "";
   const recordsByMessage = Object.fromEntries(
@@ -528,7 +621,7 @@ function renderRoom() {
       <button class="inspector-toggle" data-action="toggle-inspector" aria-expanded="false" aria-controls="inspector">在场的人</button>
     </div>
     <div id="room-messages" class="messages" role="log" aria-live="polite" aria-atomic="false">${data.messages.length ? data.messages.map(message => roomMessageHTML(message, recordsByMessage[message.id], settlementsByMessage[message.id])).join("") : `<div class="empty-state opening"><p>${escapeHTML(room.name)} · 等你开口</p></div>`}</div>
-    ${state.liveRooms.has(room.id) ? '<div class="room-waiting"><span class="reply-waiting"><i></i><i></i><i></i></span> 同场正在继续</div>' : ""}
+    ${state.liveRooms.has(room.id) && !state.liveRooms.get(room.id).finished ? '<div class="room-waiting"><span class="reply-waiting"><i></i><i></i><i></i></span> 同场正在继续</div>' : ""}
     <button class="latest-button" data-action="latest">回到最新 ↓</button>
     ${data.messages.some(message => message.settlement_job) ? "" : settlementRecoveryHTML()}
     <div class="composer-shell"><div class="composer">
@@ -538,6 +631,7 @@ function renderRoom() {
   $("#room-send-turn").onclick = () => sendRoomTurn();
   bindComposer($("#room-composer-input"), state.roomDrafts, room.id, sendRoomTurn);
   restoreView($("#room-view"), viewKey("room"));
+  ensureTimePreview();
 }
 
 function roomMessageHTML(message, record = null, settlement = null) {
@@ -560,7 +654,7 @@ function renderRoomInspector() {
     <div class="inspector-actions"><button class="soft-button" data-action="close-room">离开房间</button></div>
     <article class="inspector-card"><h4>在场的人</h4><ul class="thread-list">${data.characters.map(character => `<li>${escapeHTML(character.name)} · ${escapeHTML(character.role)}</li>`).join("") || "<li>还没有人</li>"}</ul></article>
     <article class="inspector-card"><h4>此刻</h4><p>${escapeHTML(data.scene.physical_state || "众人仍在此处。")}</p></article>`;
-  $("#inspector").insertAdjacentHTML("afterbegin", '<button id="close-inspector" class="inspector-close icon-button" data-action="close-inspector" aria-label="关闭视角">×</button>');
+  $("#inspector").insertAdjacentHTML("afterbegin", '<button id="close-inspector" class="inspector-close icon-button" data-action="close-inspector" aria-label="关闭视角">×</button><button class="soft-button mobile-save-entry" data-action="saves">存档 / 读档</button>');
 }
 
 async function sendRoomTurn() {
@@ -571,6 +665,7 @@ async function sendRoomTurn() {
   const roomId = state.room.room.id, worldId = state.world.world.id;
   const characters = state.room.characters;
   const live = {messages:new Map(), records:[], settlements:[], phase:"responding"};
+  live.messages.set("pending-user", {id:"pending-user", role:"user", content, status:"pending"});
   state.liveRooms.set(roomId, live);
   state.roomStreaming = true; state.roomWriting = false;
   state.roomDrafts.delete(roomId); input.value = "";
@@ -581,12 +676,19 @@ async function sendRoomTurn() {
   let acknowledged = false;
   const failed = [], silent = [];
   try {
-    const response = await fetch(`/api/rooms/${roomId}/turn`, {
+    const response = await appFetch(`/api/rooms/${roomId}/turn`, {
       method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({content, continuation:false}),
     });
     if (!response.ok || !response.body) throw new Error("没有接到房间的回应");
     await readStream(response, event => {
-      if (event.type === "user") { acknowledged = true; live.messages.set(event.message.id, event.message); repaint(); }
+      if (event.type === "user") {
+        acknowledged = true;
+        const waiting = live.messages.get("pending-assistant");
+        live.messages.delete("pending-user"); live.messages.delete("pending-assistant");
+        live.messages.set(event.message.id, event.message);
+        if (waiting) live.messages.set("pending-assistant", waiting);
+        repaint();
+      }
       if (event.type === "room_reply") {
         live.messages.set(event.message.id, {...event.message, writing:true});
         state.roomWriting = true; live.phase = "writing"; live.drafting = true;
@@ -612,9 +714,11 @@ async function sendRoomTurn() {
     if (failed.length) toast(`${failed.join("、")}暂时没有回应`);
     else if (silent.length) toast(`${silent.join("、")}留在沉默里`);
   } catch (error) {
-    if (!acknowledged) state.roomDrafts.set(roomId, content);
+    if (!acknowledged) { state.roomDrafts.set(roomId, content); live.messages.delete("pending-user"); }
     toast(error.message);
   } finally {
+    live.finished = true;
+    live.messages.forEach(message => { message.writing = false; });
     try {
       const data = await api(`/api/rooms/${roomId}`);
       state.liveRooms.delete(roomId);
@@ -633,18 +737,18 @@ function characterCard(character, index = 0, player = state.world?.player || {})
   const availabilityText = {
     present: "就在眼前", incoming: "正在靠近", reachable: "可以去见", unavailable: "暂时错过",
   }[availability];
-  const pulseHook = Number(character.pulse_number || 0) > 0 || character.interacted_since_pulse
-    ? character.encounter_hook
-    : "";
-  const summary = pulseHook || (character.has_messages
+  const hasCurrentScene = character.has_messages || Number(character.pulse_number || 0) > 0;
+  const pulseHook = hasCurrentScene && character.encounter_hook !== character.opening_hook
+    ? character.encounter_hook : "";
+  const summary = pulseHook || (hasCurrentScene
     ? (character.state_summary || character.tagline || "还没有留下此刻的姿态。")
     : (character.opening_hook || character.tagline || "此刻可以去见他。"));
   const unavailable = availability === "unavailable";
-  return `<button class="world-character-card ${availability}" style="--card-index:${index}" data-world-character="${character.id}" ${unavailable ? "disabled" : ""}>
+  return `<button class="world-character-card ${availability}" style="--card-index:${index}" data-portrait="${character.id}">
     <div class="encounter-state">${escapeHTML(availabilityText)}</div>
-    <div class="character-card-head">${avatar(character, "large")}<div><h4>${escapeHTML(character.name)}</h4><small>${escapeHTML(character.role)} · ${escapeHTML(character.location_name || "地点未定")}</small></div><span>${unavailable ? "未能相遇" : "进入 ›"}</span></div>
+    <div class="character-card-head">${avatar(character, "large")}<div><h4>${escapeHTML(character.name)}</h4><small>${escapeHTML(character.role)} · ${escapeHTML(character.location_name || "地点未定")}</small></div><span>查看 ›</span></div>
     <p>${escapeHTML(summary)}</p>
-    <div class="relationship-line"><span>${escapeHTML(relationship.label || "关系尚未命名")}</span><i></i><strong>${escapeHTML(relationship.notes || "还没有留下共同经历")}</strong></div>
+    <div class="relationship-line"><span>${escapeHTML(character.has_messages && relationship.notes ? "与你的近况" : relationship.label || "关系尚未命名")}</span><i></i><strong>${escapeHTML(relationship.notes || "还没有留下共同经历")}</strong></div>
   </button>`;
 }
 
@@ -652,17 +756,97 @@ function renderWorldInspector() {
   const {world, characters, locations, events, pending_sync_count} = state.world;
   const player = state.world.player || {};
   $("#inspector").innerHTML = `<div class="world-inspector">
-    <div class="inspector-title">世界底稿</div>
-    <h2>${escapeHTML(world.name)}</h2><p>${escapeHTML(world.rules)}</p>
+    <div class="inspector-title">世界介绍</div>
+    <h2>${escapeHTML(world.name)}</h2><p>${escapeHTML(world.premise || "")}</p>
     <div class="inspector-actions"><button class="soft-button" data-action="edit-world">编辑世界书</button><button class="soft-button" data-action="new-character">新人物</button></div>
     <div class="world-counts"><span><b>${characters.length}</b>人物</span><span><b>${locations.length}</b>地点</span><span><b>${events.length}</b>公开大事</span></div>
     <article class="inspector-card"><h4>此刻的你</h4><p>${escapeHTML(player.location_name || "位置尚未确定")}<br>${escapeHTML(player.condition || "没有明显的外部变化")}<br>${state.world.pending_settlements?.length ? "还有未记下的余波。" : pending_sync_count ? `${pending_sync_count} 件变化会在世界向前时传播。` : "此刻的余波已经记下。"}</p></article>
     <button class="reset-world-button" data-action="reset-world">重置这个世界</button>
   </div>`;
-  $("#inspector").insertAdjacentHTML("afterbegin", '<button id="close-inspector" class="inspector-close icon-button" data-action="close-inspector" aria-label="关闭视角">×</button>');
+  $("#inspector").insertAdjacentHTML("afterbegin", '<button id="close-inspector" class="inspector-close icon-button" data-action="close-inspector" aria-label="关闭视角">×</button><button class="soft-button mobile-save-entry" data-action="saves">存档 / 读档</button>');
 }
 
-async function advanceWorld() { await runWorldPulse(""); }
+const previewRequests = new Map();
+const previewErrors = new Map();
+const previewRevisions = new Map();
+function invalidateTimePreview(worldId) {
+  previewRevisions.set(worldId, (previewRevisions.get(worldId) || 0) + 1);
+  previewErrors.delete(worldId);
+  if (state.world?.world.id === worldId) state.world.time_preview = null;
+}
+function timePreviewHTML() {
+  const preview = state.world?.time_preview;
+  if (preview) return `<p class="time-preview">下一时刻 · ${escapeHTML(preview.world_time)}</p>`;
+  if (previewErrors.has(state.world?.world.id)) return '<p class="time-preview">暂未确定下一时刻 <button class="text-button" data-action="retry-preview">重试</button></p>';
+  if (worldBusy() || pendingSettlements().length || (state.view === "chat" && state.conversation?.needs_scene_entry)) return "";
+  return '<p class="time-preview">正在确定下一时刻…</p>';
+}
+function renderTimePreview() {
+  if (state.view === "world") { renderCurrent(); return; }
+  const root = $(`#${state.view}-view`);
+  const advance = $("#advance-turn", root);
+  if (advance) advance.disabled = !state.world.time_preview || worldBusy() || pendingSettlements().length || state.recovering || state.conversation?.needs_scene_entry || !state.conversation?.messages.length;
+  ensureTimePreview();
+}
+async function ensureTimePreview() {
+  const worldId = state.world?.world.id;
+  if (!worldId || state.screen === "library" || state.world.time_preview || worldBusy() || pendingSettlements().length || (state.view === "chat" && state.conversation?.needs_scene_entry) || previewRequests.has(worldId) || previewErrors.has(worldId)) return;
+  const revision = previewRevisions.get(worldId) || 0;
+  const isCurrent = () => state.world?.world.id === worldId && (previewRevisions.get(worldId) || 0) === revision;
+  previewRequests.set(worldId, true);
+  try {
+    const preview = await api(`/api/worlds/${worldId}/time-preview`, {method:"POST",body:"{}"});
+    // Fetch current state as well: a turn may have changed it while planning.
+    const fresh = await api(`/api/worlds/${worldId}`);
+    if (isCurrent()) {
+      state.world.time_preview = fresh.time_preview?.id === preview.id ? preview : null;
+      if (!state.world.time_preview) previewErrors.set(worldId, "时间预告已过期");
+    }
+  } catch (error) { if (isCurrent()) previewErrors.set(worldId,error.message); }
+  finally { previewRequests.delete(worldId); if (state.world?.world.id === worldId) renderTimePreview(); }
+}
+
+async function openSaves() {
+  if (!state.world) return;
+  const worldId = state.world.world.id;
+  const saves = await api(`/api/worlds/${worldId}/saves`);
+  if (state.world?.world.id !== worldId) return;
+  const dialog = $("#saves-dialog");
+  const perform = async action => {
+    if (dialog.dataset.busy === "true") return;
+    if (worldBusy(worldId) || pendingSettlements().length) { toast("请等当前回合记录完成"); return; }
+    dialog.dataset.busy = "true";
+    $$("button", dialog).forEach(button => button.disabled = true);
+    setActivity(worldId, "正在整理存档");
+    try { await action(); }
+    catch (error) { toast(error.message); }
+    finally {
+      dialog.dataset.busy = "false";
+      $$("button", dialog).forEach(button => button.disabled = false);
+      setActivity(worldId); renderCurrent();
+      if (dialog.dataset.closeAfterBusy === "true") { delete dialog.dataset.closeAfterBusy; closeDialog("#saves-dialog"); }
+    }
+  };
+  $("#save-list").innerHTML = saves.length ? saves.map(save => `<article class="save-slot"><div><strong>${escapeHTML(save.name)}</strong><p>${escapeHTML(save.world_time)}</p><small>${escapeHTML(new Date(save.created_at).toLocaleString())}</small></div><button class="soft-button" data-load-save="${escapeHTML(save.id)}">读取</button></article>`).join("") : '<p class="save-empty">还没有存档</p>';
+  $("#create-save").onclick = () => perform(async () => {
+    await api(`/api/worlds/${worldId}/saves`, {method:"POST",body:"{}"}); await openSaves(); toast("进度已保存");
+  });
+  $("#save-list").onclick = async event => {
+    const button = event.target.closest("[data-load-save]");
+    if (!button) return;
+    await perform(async () => {
+      await api(`/api/worlds/${worldId}/saves/${button.dataset.loadSave}/load`, {method:"POST",body:"{}"});
+      closeDialog("#saves-dialog");
+      state.liveTurns.clear(); state.liveRooms.clear(); state.viewMemory.clear();
+      state.conversationDrafts.clear();
+      state.roomDrafts.clear();
+      await openWorld(worldId); toast("已读档，原进度已自动备份");
+    });
+  };
+  if (!$("#saves-dialog").open) showDialog("#saves-dialog");
+}
+
+async function advanceWorld() { await runWorldPulse(); }
 
 function renderCurrent() {
   if (!state.world) return;
@@ -671,12 +855,12 @@ function renderCurrent() {
   else { renderWorld(); renderWorldInspector(); }
 }
 
-async function runWorldPulse(targetTime) {
-  if (!state.world || worldBusy() || pendingSettlements().length) return;
-  const worldId = state.world.world.id, token = state.navigation;
+async function runWorldPulse() {
+  if (!state.world || !state.world.time_preview || worldBusy() || pendingSettlements().length) return;
+  const worldId = state.world.world.id, token = state.navigation, previewId = state.world.time_preview.id;
   state.pulsing = true; setActivity(worldId, "世界正在向前"); renderCurrent();
   try {
-    const result = await api(`/api/worlds/${worldId}/pulse`, {method:"POST", body:JSON.stringify({target_time:targetTime})});
+    const result = await api(`/api/worlds/${worldId}/pulse`, {method:"POST", body:JSON.stringify({preview_id:previewId})});
     await refreshWorld(worldId);
     if (state.world?.world.id === worldId && token === state.navigation && state.screen === "world") {
       showWorldHome();
@@ -688,28 +872,27 @@ async function runWorldPulse(targetTime) {
       }, 1000);
       toast(result.world_time ? `世界来到${result.world_time}` : "世界向前了一步");
     }
-  } catch (error) { toast(error.message); }
+  } catch (error) {
+    toast(error.message);
+    await refreshWorld(worldId).catch(() => {});
+  }
   finally { state.pulsing = false; setActivity(worldId); renderCurrent(); }
 }
 
-async function advanceConversationWorld() {
-  const select = $("#advance-select");
-  const targetTime = select.value === "__custom__" ? $("#custom-time").value.trim() : select.value;
-  if (!targetTime) { $("#custom-time").focus(); return; }
-  await runWorldPulse(targetTime);
-}
 
 async function openCharacter(characterId) {
   if (state.view === "chat" && state.character?.id === characterId) return;
   const worldId = state.world.world.id;
   const token = beginNavigation();
+  invalidateTimePreview(worldId);
   try {
     const data = await api("/api/conversations", {method:"POST", body:JSON.stringify({world_id:worldId, character_id:characterId})});
+    const world = await api(`/api/worlds/${worldId}`);
     if (token !== state.navigation || state.world?.world.id !== worldId) return;
     const conversationId = data.conversation.id;
     if (!state.streamingConversationIds.has(conversationId)) state.liveTurns.delete(conversationId);
     state.conversation = data; state.character = data.character; state.room = null;
-    state.world.player = data.player; state.view = "chat";
+    state.world = world; state.view = "chat";
     renderShell(); renderChat(); renderCharacterInspector(); showView("chat");
     if (data.needs_scene_entry && !data.pending_settlements?.length && !worldBusy() && !state.openingConversationIds.has(conversationId)) generateOpening(conversationId);
   } catch (error) { if (token === state.navigation) toast(error.message); }
@@ -742,8 +925,9 @@ async function generateOpening(conversationId = state.conversation?.conversation
 
 async function reloadConversation(conversationId = state.conversation?.conversation.id) {
   if (!conversationId) return;
+  const navigation = state.navigation;
   const data = await api(`/api/conversations/${conversationId}`);
-  if (state.conversation?.conversation.id !== conversationId) return;
+  if (state.conversation?.conversation.id !== conversationId || navigation !== state.navigation) return;
   state.conversation = data; state.character = data.character;
   renderChat(); renderCharacterInspector();
 }
@@ -771,8 +955,8 @@ function renderChat() {
   $("#chat-view").innerHTML = `
     <div class="chat-toolbar">
       <button class="chat-back" data-action="world-home">‹ 世界</button>
-      <div class="chat-person">${avatar(character)}<div><strong>${escapeHTML(character.name)}</strong><small>${escapeHTML(character.location_name || character.role)}</small></div></div>
-      <span class="live-world-badge">世界持续记录</span>
+      <button class="chat-person portrait-trigger" data-portrait="${character.id}" aria-label="查看${escapeHTML(character.name)}的角色卡">${avatar(character)}<div><strong>${escapeHTML(character.name)}</strong><small>${escapeHTML(character.location_name || character.role)}</small></div></button>
+      <button class="soft-button" data-action="edit-player">我的角色</button><span class="live-world-badge">世界持续记录</span>
       <button class="inspector-toggle" data-action="toggle-inspector" aria-expanded="false" aria-controls="inspector">视角</button>
     </div>
     <div id="messages" class="messages" role="log" aria-live="polite" aria-atomic="false">${data.messages.map(message => messageHTML(message, recordsByMessage[message.id], settlementsByMessage[message.id])).join("")}${entryStatus}</div>
@@ -783,14 +967,7 @@ function renderChat() {
       <div class="composer-actions">
         <div class="composer-tools">
           <button id="continue-turn" class="continue-button" title="从刚才停下的瞬间接着写" ${data.messages.length && !turnLocked ? "" : "disabled"}>继续写</button>
-          <select id="advance-select" aria-label="推进到之后" ${data.messages.length && !turnLocked ? "" : "disabled"}>
-            <option value="过一会儿">过一会儿</option>
-            <option value="第二天早上">第二天早上</option>
-            <option value="一周后">一周后</option>
-            <option value="__custom__">自定义…</option>
-          </select>
-          <input id="custom-time" class="custom-time hidden" aria-label="希望到达的时刻" placeholder="例如：次日傍晚" value="${escapeHTML(state.advanceCustom.get(conversationId) || "")}" ${turnLocked ? "disabled" : ""}>
-          <button id="advance-turn" class="continue-button" title="跳过一段时间，让整个世界向前" ${data.messages.length && !turnLocked && !state.pulsing ? "" : "disabled"}>让世界向前</button>
+          <button id="advance-turn" class="continue-button" title="跳过一段时间，让整个世界向前" ${state.world.time_preview && data.messages.length && !turnLocked && !state.pulsing ? "" : "disabled"}>让世界向前</button>
         </div>
         <button id="send-turn" class="send-button" aria-label="发送" ${turnLocked ? "disabled" : ""}>↑</button>
       </div>
@@ -798,19 +975,11 @@ function renderChat() {
   const input = $("#composer-input");
   $("#send-turn").onclick = () => sendTurn(false);
   $("#continue-turn").onclick = () => sendTurn(true);
-  $("#advance-turn").onclick = () => advanceConversationWorld();
-  $("#advance-select").onchange = () => {
-    state.advanceChoices.set(conversationId, $("#advance-select").value);
-    const custom = $("#advance-select").value === "__custom__";
-    $("#custom-time").classList.toggle("hidden", !custom);
-    if (custom) $("#custom-time").focus();
-  };
+  $("#advance-turn").onclick = () => advanceWorld();
   $("#retry-opening")?.addEventListener("click", () => generateOpening());
   bindComposer(input, state.conversationDrafts, conversationId, () => sendTurn(false));
-  $("#advance-select").value = state.advanceChoices.get(conversationId) || "过一会儿";
-  $("#custom-time").classList.toggle("hidden", $("#advance-select").value !== "__custom__");
-  $("#custom-time").oninput = event => state.advanceCustom.set(conversationId, event.target.value);
   restoreView($("#chat-view"), viewKey("chat"));
+  ensureTimePreview();
 }
 
 function messageHTML(message, record = null, settlement = null) {
@@ -839,21 +1008,20 @@ function settlementHTML(settlement) {
   const scene = settlement.scene || {};
   const relationship = settlement.relationship || {};
   const player = settlement.player || {};
+  const evidence = settlement.evidence || {};
   const rows = [
-    ["地点", scene.location || scene.location_name],
-    ["现场", scene.physical_state],
-    ["情绪", scene.emotional_state],
-    ["仍在发生", readableList(scene.active_threads)],
-    ["关系", [relationship.label, relationship.note].filter(Boolean).join(" · ")],
-    ["你的状态", player.condition],
-    ["你身上的痕迹", readableList(player.visible_traces)],
-    ["仍要兑现", readableList(player.commitments)],
-  ].filter(([, value]) => String(value || "").trim());
+    [evidence["scene.location"] || evidence["player.location"], "地点", scene.location || player.location],
+    [evidence["scene.world_time"], "时间", scene.world_time],
+    [evidence.relationship, "关系", [relationship.label, relationship.note,
+      ...[["trust_delta","信任"],["desire_delta","欲望"],["tension_delta","张力"]].filter(([key]) => relationship[key]).map(([key,label]) => `${label} ${relationship[key] > 0 ? "+" : ""}${relationship[key]}`)].filter(Boolean).join(" · ")],
+    [evidence["player.commitments"], "仍要兑现", readableList(player.commitments) || "已无待兑现的承诺"],
+  ].filter(([changed,, value]) => changed && String(value || "").trim()).map(([,label,value]) => [label,value]);
   if (!rows.length) return "";
   return `<details class="settlement-fields"><summary>这一轮留下的变化</summary><ul>${rows.map(([label, value]) => `<li><span>${escapeHTML(label)}</span><p>${escapeHTML(value)}</p></li>`).join("")}</ul></details>`;
 }
 
 function recordHTML(record = null, settlement = null) {
+  if (settlement?.decision?.outcome === "rejected") return `<aside class="world-record"><small>正文已保留 · 本轮变化未被确认</small></aside>`;
   const changes = settlementHTML(settlement);
   if (!record && !changes) return "";
   const visibility = record ? (record.visibility === "public" ? "公开变化" : record.visibility === "secret" ? "秘密记录" : "私下发生") : "这一轮的变化";
@@ -887,12 +1055,12 @@ function renderCharacterInspector() {
   $("#inspector").innerHTML = `
     <div class="inspector-title">${escapeHTML(character.name)}的视角</div>
     <div class="inspector-profile">${avatar(character)}<h2>${escapeHTML(character.name)}</h2><p>${escapeHTML(character.role)} · ${character.age}</p></div>
-    <div class="inspector-actions"><button class="soft-button" data-action="edit-character">编辑人物</button></div>
+    <div class="inspector-actions"><button class="soft-button" data-portrait="${character.id}">角色立绘</button><button class="soft-button" data-action="edit-character">编辑人物</button></div>
     <article class="inspector-card"><h4>当前现场</h4><p>${escapeHTML(sceneLocation)}<br>${escapeHTML(data.scene.physical_state || "距离尚未改变")}<br>${escapeHTML(data.scene.emotional_state || "情绪仍未显露")}</p></article>
     <article class="inspector-card"><h4>与你的关系</h4><p>${escapeHTML(relationship.label || "尚未命名")}<br>${escapeHTML(relationship.notes || "还没有留下共同经历")}</p></article>
     <article class="inspector-card"><h4>还在发生</h4><ul class="thread-list">${threads.length ? threads.map(item => `<li>${escapeHTML(item)}</li>`).join("") : "<li>尚未形成牵引</li>"}</ul></article>
     <article class="inspector-card"><h4>${escapeHTML(character.name)}知道或相信的事</h4><ul class="knowledge-list">${data.knowledge.length ? data.knowledge.slice(0,10).map(item => `<li><span>${escapeHTML(item.belief || item.title)}</span><small>${escapeHTML(knowledgeSource(item))}</small></li>`).join("") : "<li>还没有只属于此人的事实</li>"}</ul></article>`;
-  $("#inspector").insertAdjacentHTML("afterbegin", '<button id="close-inspector" class="inspector-close icon-button" data-action="close-inspector" aria-label="关闭视角">×</button>');
+  $("#inspector").insertAdjacentHTML("afterbegin", '<button id="close-inspector" class="inspector-close icon-button" data-action="close-inspector" aria-label="关闭视角">×</button><button class="soft-button mobile-save-entry" data-action="saves">存档 / 读档</button>');
 }
 
 function knowledgeSource(item) {
@@ -912,6 +1080,8 @@ async function sendTurn(continuation, presetContent = "") {
   if (!continuation && !content) return;
   const worldId = state.world.world.id;
   const live = {messages:new Map(), records:[], settlements:[], phase:"speaking"};
+  if (!continuation) live.messages.set("pending-user", {id:"pending-user", role:"user", content, status:"pending"});
+  live.messages.set("pending-assistant", {id:"pending-assistant", role:"assistant", content:"", status:"streaming"});
   state.liveTurns.set(conversationId, live);
   state.streamingConversationIds.add(conversationId);
   state.writingConversationIds.delete(conversationId);
@@ -932,24 +1102,32 @@ async function sendTurn(continuation, presetContent = "") {
     const follow = isNearMessagesEnd(scroller);
     $(".reply-waiting", node)?.remove();
     $(".message-body", node).textContent = live.messages.get(assistantId).content;
-    $(".message-body", node).classList.add("typing-caret");
+    $(".message-body", node).classList.toggle("typing-caret", live.messages.get(assistantId).status === "streaming");
     if (follow) scroller.scrollTop = scroller.scrollHeight;
     updateLatestButton($("#chat-view"));
   };
   try {
-    const response = await fetch(`/api/conversations/${conversationId}/turn`, {
+    const response = await appFetch(`/api/conversations/${conversationId}/turn`, {
       method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({content, continuation}),
     });
     if (!response.ok || !response.body) throw new Error("没有接到世界的回应");
     await readStream(response, event => {
-      if (event.type === "user") { acknowledged = true; live.messages.set(event.message.id, event.message); repaint(); }
-      if (event.type === "assistant_start") { assistantId = event.message.id; live.messages.set(assistantId, event.message); repaint(); }
+      if (event.type === "user") {
+        acknowledged = true;
+        const waiting = live.messages.get("pending-assistant");
+        live.messages.delete("pending-user"); live.messages.delete("pending-assistant");
+        live.messages.set(event.message.id, event.message);
+        if (waiting) live.messages.set("pending-assistant", waiting);
+        repaint();
+      }
+      if (event.type === "assistant_start") { live.messages.delete("pending-assistant"); assistantId = event.message.id; live.messages.set(assistantId, event.message); repaint(); }
       if (event.type === "delta" && assistantId) {
         live.messages.get(assistantId).content = event.full;
         if (!frame) frame = requestAnimationFrame(flush);
       }
       if (event.type === "assistant_complete" && assistantId) {
-        if (frame) cancelAnimationFrame(frame); flush();
+        if (frame) cancelAnimationFrame(frame); frame = 0;
+        if (typeof event.content === "string") live.messages.get(assistantId).content = event.content;
         Object.assign(live.messages.get(assistantId), {status:"complete", writing:true, settlement_job:null});
         live.phase = "writing";
         state.writingConversationIds.add(conversationId);
@@ -968,10 +1146,11 @@ async function sendTurn(continuation, presetContent = "") {
       if (event.type === "error") throw new Error(event.error.message);
     });
   } catch (error) {
-    if (!acknowledged) state.conversationDrafts.set(conversationId, content);
+    if (!acknowledged) { state.conversationDrafts.set(conversationId, content); live.messages.delete("pending-user"); }
     toast(error.message);
   } finally {
     if (frame) cancelAnimationFrame(frame);
+    live.messages.delete("pending-assistant");
     live.messages.forEach(message => { message.writing = false; if (message.status === "streaming") message.status = "error"; });
     try {
       const data = await api(`/api/conversations/${conversationId}`);
@@ -1039,20 +1218,12 @@ function fillProviderForm() {
 function openSettings() { fillProviderForm(); $("#provider-feedback").textContent = ""; showDialog("#provider-dialog"); }
 function closeSettings() { closeDialog("#provider-dialog"); }
 
-const velvetDefaults = {
-  name:"绯港", premise:"一座把秘密留得比人更久的海港。三名彼此牵连的成年人，各自与你拥有独立关系，却生活在同一条持续变化的时间线上。",
-  opening_narration:"第七码头的钟声还没有响，雾压在绯港的屋檐下。夜航公馆仍亮着一扇窗，鸦色会所最后一轮酒还没有收，十三号码头的临时诊室也没有熄灯。今晚的三处相遇都还在等你走近。",
-  atmosphere:"潮湿、华丽、危险、亲密",
-  rules:"所有角色均为成年人；角色拥有自主意志；发生过的事会改变关系、知识与之后的选择；意图不是事实。",
-  current_time:"第七码头钟响前",
-};
-
 function selectTemplate(templateId, fill = true) {
   const form = $("#world-form");
   form.elements.template_id.value = templateId;
   $$('[data-template]').forEach(button => button.classList.toggle("active", button.dataset.template === templateId));
   if (!fill) return;
-  const values = templateId === "velvet_harbor" ? velvetDefaults : {name:"", premise:"", opening_narration:"", atmosphere:"", rules:"所有角色均为成年人；角色拥有自主意志；意图不是事实。", current_time:""};
+  const values = templateId ? state.templates.find(item => item.id === templateId).world : {name:"", premise:"", opening_narration:"", atmosphere:"", rules:"所有角色均为成年人；角色拥有自主意志；意图不是事实。", current_time:""};
   for (const key of ["name","premise","opening_narration","atmosphere","rules","current_time"]) form.elements[key].value = values[key];
 }
 
@@ -1140,7 +1311,7 @@ $("#reset-world-form").onsubmit = async event => {
     state.rooms = [];
     state.roomStreaming = false;
     state.roomWriting = false;
-    state.viewMemory.clear(); state.advanceCustom.clear(); state.advanceChoices.clear();
+    state.viewMemory.clear();
     state.conversationDrafts.clear();
     state.roomDrafts.clear();
     state.streamingConversationIds.clear();
@@ -1198,9 +1369,29 @@ $("#test-provider").onclick = async () => {
 };
 
 document.addEventListener("click", event => {
+  const portrait = event.target.closest("[data-portrait]");
+  if (portrait) openCharacterPortrait(portrait.dataset.portrait);
   const template = event.target.closest("[data-template]")?.dataset.template;
   if (template !== undefined) selectTemplate(template);
   const action = event.target.closest("[data-action]")?.dataset.action;
+  if (action === "retry-preview") { previewErrors.delete(state.world?.world.id); ensureTimePreview(); }
+  if (action === "saves") openSaves().catch(error => toast(error.message));
+  if (action === "close-saves") closeDialog("#saves-dialog");
+  if (action === "switch-space") {
+    if (worldBusy()) { toast("请等当前回合完成后切换"); return; }
+    fetch(appPath("/logout"), {method:"POST"}).then(response => {
+      if (!response.ok) throw new Error("退出失败，请重试");
+      location.replace(appPath("/login"));
+    }).catch(error => toast(error.message));
+  }
+  if (action === "edit-player") {
+    if (worldBusy() || pendingSettlements().length) { toast("请等这一轮记录完成"); return; }
+    const profile = state.world.player_profile || {};
+    for (const key of ["name","age","pronouns","appearance","identity"]) $("#player-form").elements[key].value = profile[key] ?? "";
+    showDialog("#player-dialog");
+  }
+  if (action === "close-player") closeDialog("#player-dialog");
+  if (action === "close-portrait") closeDialog("#portrait-dialog");
   if (action === "retry-settlements") retrySettlements();
   if (action === "settings") openSettings();
   if (action === "close-settings") closeSettings();
@@ -1225,6 +1416,17 @@ document.addEventListener("click", event => {
     scroller.scrollTo({top:scroller.scrollHeight, behavior:reducedMotion.matches ? "instant" : "smooth"});
   }
 });
+
+$("#player-form").onsubmit = async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  await formAction(form, form.querySelector('[type="submit"]'), "正在保存…", async () => {
+    const values = Object.fromEntries(new FormData(form));
+    values.age = values.age ? Number(values.age) : null;
+    state.world.player_profile = await api(`/api/worlds/${state.world.world.id}/player-profile`, {method:"PUT", body:JSON.stringify(values)});
+    closeDialog("#player-dialog"); toast("角色已保存");
+  });
+};
 
 $("#room-form").onsubmit = async event => {
   event.preventDefault();

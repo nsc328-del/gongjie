@@ -220,9 +220,10 @@ class AnthropicMessagesAdapter:
             if delta.get("type") == "thinking_delta":
                 return [StreamEvent("reasoning", delta.get("thinking", ""))]
         if event_type == "message_delta":
-            events = [StreamEvent("done", (obj.get("delta") or {}).get("stop_reason"))]
+            reason = (obj.get("delta") or {}).get("stop_reason")
+            events = [StreamEvent("done", reason)] if reason else []
             if obj.get("usage"):
-                events.append(StreamEvent("usage", self._usage(obj["usage"])))
+                events.append(StreamEvent("usage_update", obj["usage"]))
             return events
         if event_type == "message_stop":
             return [StreamEvent("done")]
@@ -265,6 +266,7 @@ class ProviderClient:
         adapter = self.adapter(profile)
         url, headers, body = adapter.build_request(context, profile, stream=True)
         snapshot = ReplySnapshot()
+        completed = False
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 async with client.stream("POST", url, headers=headers, json=body) as response:
@@ -280,15 +282,21 @@ class ProviderClient:
                             payload = "\n".join(data_lines)
                             data_lines.clear()
                             for event in adapter.parse_stream(payload):
+                                completed = completed or event.kind == "done"
                                 self._apply(snapshot, event)
                                 if event.kind != "done" or event.value:
                                     yield ReplySnapshot(snapshot.content, snapshot.reasoning, snapshot.finish_reason, snapshot.model, snapshot.usage)
                     if data_lines:
                         for event in adapter.parse_stream("\n".join(data_lines)):
+                            completed = completed or event.kind == "done"
                             self._apply(snapshot, event)
                             yield ReplySnapshot(snapshot.content, snapshot.reasoning, snapshot.finish_reason, snapshot.model, snapshot.usage)
         except httpx.HTTPError as error:
             raise ProviderError("network", str(error), retryable=True) from error
+        if not completed:
+            raise ProviderError("stream_incomplete", "模型回应中途断开，未完成的正文尚未记录到世界", retryable=True)
+        if snapshot.finish_reason not in {None, 'stop', 'end_turn'}:
+            raise ProviderError('response_incomplete', '模型输出未完成，请提高输出额度后重试', retryable=True)
 
     async def response(self, context: RequestContext, profile: dict[str, Any]) -> ReplySnapshot:
         adapter = self.adapter(profile)
@@ -304,7 +312,10 @@ class ProviderClient:
             payload = response.json()
         except json.JSONDecodeError as error:
             raise ProviderError("provider", "模型返回了无法解析的内容", status=response.status_code, original=response.text) from error
-        return adapter.parse_response(payload)
+        snapshot = adapter.parse_response(payload)
+        if snapshot.finish_reason not in {'stop', 'end_turn'} or not snapshot.content.strip():
+            raise ProviderError('response_incomplete', '模型输出未完成，请提高输出额度后重试', retryable=True)
+        return snapshot
 
     @staticmethod
     def _apply(snapshot: ReplySnapshot, event: StreamEvent) -> None:
@@ -316,6 +327,14 @@ class ProviderClient:
             snapshot.model = event.value
         elif event.kind == "usage":
             snapshot.usage = event.value
+        elif event.kind == "usage_update":
+            usage = snapshot.usage or Usage()
+            for key in ("input_tokens", "output_tokens"):
+                if key in event.value:
+                    setattr(usage, key, int(event.value[key] or 0))
+            if "cache_read_input_tokens" in event.value:
+                usage.cached_input_tokens = event.value["cache_read_input_tokens"]
+            snapshot.usage = usage
         elif event.kind == "done":
             if event.value:
                 snapshot.finish_reason = str(event.value)

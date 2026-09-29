@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>共界</title>
   <meta name="theme-color" content="#f3f0e7">
-  <link rel="stylesheet" href="/static/styles.css?v=13">
+  <link rel="stylesheet" href="static/styles.css?v=20">
 </head>
 <body>
   <div class="grain"></div>
@@ -53,6 +53,7 @@
       </nav>
       <div class="rail-label"><span>人物</span><b id="character-count">0</b></div>
       <div id="character-list" class="character-list"></div>
+      <button class="nav-button save-entry" data-action="saves">存档 / 读档</button>
       <div class="rail-bottom">
         <div id="provider-state" class="provider-state"><i></i><span>未连接</span></div>
         <button class="icon-button" data-action="settings" aria-label="模型设置">⚙</button>
@@ -83,6 +84,8 @@
     <aside id="inspector" class="inspector"></aside>
   </div>
 
+  <dialog id="saves-dialog" class="dialog editor-dialog" aria-label="存档与读档"><div class="save-dialog-body"><div class="dialog-head"><h2>存档 / 读档</h2><button class="close-button" data-action="close-saves">×</button></div><button class="primary-button" id="create-save">保存当前进度</button><div id="save-list"></div></div></dialog>
+
   <dialog aria-label="让世界开口" id="provider-dialog" class="dialog">
     <form id="provider-form" method="dialog">
       <div class="dialog-head">
@@ -105,6 +108,7 @@
         <label>最长回复<input name="max_tokens" type="number" min="256" max="200000"></label>
         <label>温度<input name="temperature" type="number" min="0" max="2" step="0.05"></label>
       </div>
+      <div id="space-controls" class="space-controls" hidden><span id="space-label"></span><button type="button" class="soft-button" data-action="switch-space">退出并切换存档</button></div>
       <div id="provider-feedback" class="form-feedback"></div>
       <div class="dialog-actions">
         <button type="button" class="soft-button" id="test-provider">测试连接</button>
@@ -123,8 +127,8 @@
         <button type="button" class="template-option active" data-template="">
           <strong>空白世界</strong><span>从一页世界书开始</span>
         </button>
-        <button type="button" class="template-option" data-template="velvet_harbor">
-          <strong>绯港序章</strong><span>三名角色与一座雾港</span>
+        <button type="button" class="template-option" data-template="daylight">
+          <strong>白昼将死</strong><span>四个人物与停滞的太阳</span>
         </button>
       </section>
       <input name="template_id" type="hidden" value="">
@@ -146,6 +150,21 @@
       </section>
       <div class="dialog-actions"><button type="submit" class="primary-button">保存世界</button></div>
     </form>
+  </dialog>
+
+  <dialog id="player-dialog" class="dialog editor-dialog" aria-labelledby="player-title">
+    <form id="player-form"><div class="dialog-head"><h2 id="player-title">我的角色</h2><button type="button" class="close-button" data-action="close-player" aria-label="关闭">×</button></div>
+    <div class="form-row"><label>名字<input name="name" maxlength="60"></label><label>年龄<input name="age" type="number" min="18" max="999" placeholder="成年"></label></div>
+    <label>称谓<input name="pronouns" maxlength="20" placeholder="她 / 他 / 其他称谓"></label>
+    <label>外貌<textarea name="appearance" rows="4" maxlength="2000"></textarea></label>
+    <label>公开身份与背景<textarea name="identity" rows="4" maxlength="2000"></textarea></label>
+    <div class="dialog-actions"><button type="submit" class="primary-button">保存角色</button></div></form>
+  </dialog>
+
+  <dialog id="portrait-dialog" class="dialog portrait-dialog" aria-labelledby="portrait-title">
+    <button type="button" class="close-button portrait-close" aria-label="关闭角色卡" data-action="close-portrait">×</button>
+    <div id="portrait-art" class="portrait-art"></div>
+    <div class="portrait-copy"><span id="portrait-role" class="stage-eyebrow"></span><h2 id="portrait-title"></h2><p id="portrait-tagline"></p><button id="portrait-enter" class="primary-button"></button></div>
   </dialog>
 
   <dialog aria-label="人物底色" id="character-dialog" class="dialog editor-dialog">
@@ -210,6 +229,6 @@
   </dialog>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js?v=13"></script>
+  <script src="static/app.js?v=31"></script>
 </body>
 </html>

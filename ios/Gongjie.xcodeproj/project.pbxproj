@@ -1,0 +1,390 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		02ACBB0F499C79F1BE5169CB /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9DB72D217438999A3BB6445 /* SettingsView.swift */; };
+		0EF294F14F2DD74849238242 /* GongjieCore in Frameworks */ = {isa = PBXBuildFile; productRef = 53A0427440617925CB8B4DEF /* GongjieCore */; };
+		3B8232F9DEA022B243EAD2E0 /* WorldView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 389643A758A28332887CD0B8 /* WorldView.swift */; };
+		423725DB4E8237C62C180CD7 /* Design.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7D93B7FE24224F835E91BFA /* Design.swift */; };
+		44AC073DAE7C4E06D50BF600 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D37BD2061168ABF3C9E5FE41 /* AppModel.swift */; };
+		48F61C277B9E6D62A1C4396C /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02158EC330D63A880CED2DAE /* LibraryView.swift */; };
+		64D16B3834FFCED3BEE5090D /* InspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70D7DD2F4064592C74ADEE1D /* InspectorView.swift */; };
+		B52017621CFE47AC5DC3450F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 39215E1371667BBEC840E5A4 /* Assets.xcassets */; };
+		C712BC62F40ECBB0232537EE /* GongjieApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78A2742E1615594FAA5105CB /* GongjieApp.swift */; };
+		E1FA05BC57A989AFA94DC746 /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F92D4B9D709FD3B136A2C5D /* ConversationView.swift */; };
+		F4177C3149CC03F8DCFC035D /* Editors.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC875B3ED43F4FD201D6568D /* Editors.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		02158EC330D63A880CED2DAE /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
+		1319F7E6BB92386B34E57B09 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		389643A758A28332887CD0B8 /* WorldView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldView.swift; sourceTree = "<group>"; };
+		39215E1371667BBEC840E5A4 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		3F92D4B9D709FD3B136A2C5D /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
+		70D7DD2F4064592C74ADEE1D /* InspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorView.swift; sourceTree = "<group>"; };
+		78A2742E1615594FAA5105CB /* GongjieApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GongjieApp.swift; sourceTree = "<group>"; };
+		84A27DD9E5062DC3D11B7A2D /* Gongjie.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Gongjie.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D37BD2061168ABF3C9E5FE41 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		E9DB72D217438999A3BB6445 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		EC875B3ED43F4FD201D6568D /* Editors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Editors.swift; sourceTree = "<group>"; };
+		ECEE746B5978B4C4F62BD5FE /* ios */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ios; path = .; sourceTree = SOURCE_ROOT; };
+		F7D93B7FE24224F835E91BFA /* Design.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Design.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		27BA9BEE1B773E2F89BEF0F0 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0EF294F14F2DD74849238242 /* GongjieCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		1D8EAB277F5E3DBD801946AF /* Gongjie */ = {
+			isa = PBXGroup;
+			children = (
+				D37BD2061168ABF3C9E5FE41 /* AppModel.swift */,
+				39215E1371667BBEC840E5A4 /* Assets.xcassets */,
+				3F92D4B9D709FD3B136A2C5D /* ConversationView.swift */,
+				F7D93B7FE24224F835E91BFA /* Design.swift */,
+				EC875B3ED43F4FD201D6568D /* Editors.swift */,
+				78A2742E1615594FAA5105CB /* GongjieApp.swift */,
+				1319F7E6BB92386B34E57B09 /* Info.plist */,
+				70D7DD2F4064592C74ADEE1D /* InspectorView.swift */,
+				02158EC330D63A880CED2DAE /* LibraryView.swift */,
+				E9DB72D217438999A3BB6445 /* SettingsView.swift */,
+				389643A758A28332887CD0B8 /* WorldView.swift */,
+			);
+			path = Gongjie;
+			sourceTree = "<group>";
+		};
+		4780751636038A970AED08E6 = {
+			isa = PBXGroup;
+			children = (
+				1D8EAB277F5E3DBD801946AF /* Gongjie */,
+				63EF8669808E8EB96F0488AB /* Packages */,
+				D216AAECB756E0CD9190BA2D /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		63EF8669808E8EB96F0488AB /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				ECEE746B5978B4C4F62BD5FE /* ios */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		D216AAECB756E0CD9190BA2D /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				84A27DD9E5062DC3D11B7A2D /* Gongjie.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		2F1D07024E7321799B1FF733 /* Gongjie */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1BA0B6ADB8A96048923DD51A /* Build configuration list for PBXNativeTarget "Gongjie" */;
+			buildPhases = (
+				05BFE317AAE9BA267BAE3622 /* Sources */,
+				AF28CFE468D4A68931318667 /* Resources */,
+				27BA9BEE1B773E2F89BEF0F0 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Gongjie;
+			packageProductDependencies = (
+				53A0427440617925CB8B4DEF /* GongjieCore */,
+			);
+			productName = Gongjie;
+			productReference = 84A27DD9E5062DC3D11B7A2D /* Gongjie.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		C1F84328F617BB5B36F46176 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					2F1D07024E7321799B1FF733 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = AEA88C42A61F7801BD6A1C43 /* Build configuration list for PBXProject "Gongjie" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = "zh-Hans";
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				"zh-Hans",
+			);
+			mainGroup = 4780751636038A970AED08E6;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				ABA43AE6423A5150C7E0EA34 /* XCLocalSwiftPackageReference "." */,
+			);
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				2F1D07024E7321799B1FF733 /* Gongjie */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AF28CFE468D4A68931318667 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B52017621CFE47AC5DC3450F /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		05BFE317AAE9BA267BAE3622 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				44AC073DAE7C4E06D50BF600 /* AppModel.swift in Sources */,
+				E1FA05BC57A989AFA94DC746 /* ConversationView.swift in Sources */,
+				423725DB4E8237C62C180CD7 /* Design.swift in Sources */,
+				F4177C3149CC03F8DCFC035D /* Editors.swift in Sources */,
+				C712BC62F40ECBB0232537EE /* GongjieApp.swift in Sources */,
+				64D16B3834FFCED3BEE5090D /* InspectorView.swift in Sources */,
+				48F61C277B9E6D62A1C4396C /* LibraryView.swift in Sources */,
+				02ACBB0F499C79F1BE5169CB /* SettingsView.swift in Sources */,
+				3B8232F9DEA022B243EAD2E0 /* WorldView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		265073E7D576A050CE31044C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Gongjie/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.gongjie.native;
+				PRODUCT_NAME = Gongjie;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		60A9DDFB0286A62C199CB629 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		6C98A1330B797F44487CCF60 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Gongjie/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.gongjie.native;
+				PRODUCT_NAME = Gongjie;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		BC3AEF740B2013B29CB7EA22 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1BA0B6ADB8A96048923DD51A /* Build configuration list for PBXNativeTarget "Gongjie" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				265073E7D576A050CE31044C /* Debug */,
+				6C98A1330B797F44487CCF60 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		AEA88C42A61F7801BD6A1C43 /* Build configuration list for PBXProject "Gongjie" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BC3AEF740B2013B29CB7EA22 /* Debug */,
+				60A9DDFB0286A62C199CB629 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		ABA43AE6423A5150C7E0EA34 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		53A0427440617925CB8B4DEF /* GongjieCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = GongjieCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = C1F84328F617BB5B36F46176 /* Project object */;
+}

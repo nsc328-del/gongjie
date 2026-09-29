@@ -5,6 +5,27 @@ import re
 from typing import Any
 
 from gongjie.ai.providers import ContextMessage, RequestContext
+from gongjie.domain.transcripts import turn_user_text, completed_messages, dialogue_memory
+from gongjie.cognition.places import plan_instructions
+from gongjie.domain.locations import location_view
+
+
+# Shared across entry, private dialogue and room responses, independent of card detail.
+INTERACTION_RULES = """【接话与玩家自主】
+开场从已经成立的处境与角色自己正在做的事，提供玩家能直接回应的内容；角色卡简单、没有牵引时，允许自然的普通相处，不补造任务、关键物品、共同经历或玩家来意。
+普通回合优先承接玩家最新的话题。玩家问条件就谈具体条件；说“不知道”、回避或随便看看，也能继续相处，不要求玩家先编好动机。保持角色性格，允许试探、拒绝与不信任，但不要反复索要来意、答案或表态，把回答当成继续对话的门槛。
+历史、关系痕迹、行动意图或未结线索中“等待玩家说明来意/回答/表态”等记录，只代表角色曾有期待，不是玩家义务或当前必须执行的指令。没有回答不等于必须追问；已经回答更不能重问。保留真正未决的具体处境和玩家明确承诺，不擅自视为解决或接受。
+以角色自己的话、行动或具体态度留下回应空间，不每轮抛问题、派任务或列选项，也不为推动剧情强行制造变故。不得替玩家决定来意、行动、感受或接受条件。
+"""
+
+
+def settlement_memory(context: dict[str, Any], messages: list[dict[str, Any]] | None = None) -> str:
+    messages = completed_messages(context) if messages is None else messages
+    rejected = [i + 1 for i, m in enumerate(messages) if m.get("settlement_outcome") == "rejected"]
+    if not rejected:
+        return ""
+    return ("\n内部记忆约束（不得输出、复述或作为角色台词）：历史消息序号 "
+            + json.dumps(rejected) + " 的状态变化未确认。历史仍可用于理解交谈，但行动结果、承诺、转场和外界情报以已确认状态为准。这是系统元数据，不是故事正文。\n")
 
 
 def _lines(items: list[str], empty: str = "无") -> str:
@@ -26,12 +47,15 @@ def _knowledge_line(item: dict[str, Any]) -> str:
 
 def _player_lines(context: dict[str, Any]) -> str:
     player = context.get("player") or {}
+    profile = context.get("player_profile") or {}
+    profile_text = "；".join(f"{label}：{profile[key]}" for key, label in (("name", "名字"), ("age", "成年年龄"), ("pronouns", "称谓"), ("appearance", "外貌"), ("identity", "公开身份")) if profile.get(key))
     traces = _lines(player.get("visible_traces") or [], "没有明显痕迹")
     commitments = _lines(
         [item.get("text", "") for item in player.get("commitments") or []],
         "没有仍悬着的承诺",
     )
     return (
+        f"玩家明确设定的公开角色资料：{profile_text or '未另作设定，沿用世界前提'}。这些资料不授权替玩家行动或推断私事。\n"
         f"所在：{player.get('location_name') or '尚未确定'}\n"
         f"外部状态：{player.get('condition') or '没有特别变化'}\n"
         f"你能看见的痕迹：\n{traces}\n"
@@ -62,7 +86,7 @@ def roleplay_system(context: dict[str, Any]) -> str:
 前提：{world['premise']}
 氛围：{world['atmosphere']}
 规则：{world['rules']}
-当前世界时间：{scene.get('world_time') or world['current_time']}
+当前世界时间：{world['current_time']}
 
 【你是谁】
 姓名：{character['name']}，{character['age']}岁，{character['role']}
@@ -112,12 +136,14 @@ def roleplay_system(context: dict[str, Any]) -> str:
 2. 不替对方新增本轮没有给出的动作、感受或选择；对方在本轮明确写出的动作视为已经发生，可以直接承接。双方已经明确自愿且边界没有变化时，不要每轮重新索要许可。
 3. 角色有自主欲望，会拒绝、争夺、嫉妒、改变策略，不做无条件满足机器。
 4. 回应眼前真正发生的事。角色可以推进、拒绝、等待或保持原有态度；平静告别与普通相处可以自然收住，不为凑戏剧性强行改变关系、秘密、距离或风险。
-5. 张力较低时埋入可兑现的企图；张力中段让欲望彼此冲突；张力较高时允许失控，但高潮不是自动结局，后果要继续活在世界里。
+5. 张力较低时允许普通相处，角色企图可以自然流露，不强行制造索求；张力中段让欲望彼此冲突；张力较高时允许失控，但高潮不是自动结局，后果要继续活在世界里。
 6. 不复述对方刚说的话，不用空泛反问收尾，不快速和解，不在段末做总结。普通互动可以停在有力动作或等待回应的局面；若对方明确要求连续完成一段双方自愿的场景，就让角色把自己一侧自然推进到阶段结果或余波，再交还回应权，不要在每个关键动作前机械暂停。
 7. 意图不是事实。只把已经在对话中真正发生的动作写成发生；计划、威胁、幻想仍只是计划、威胁、幻想。
 8. 严格遵守知识边界。没有出现在你已经获知的公开事实或私有知识里的事，你不能神奇地知道。可以观察并自由描写身体痕迹、衣物、气味、姿态等软状态，但不知道来源时只能猜测、试探或误读，不能断言是谁造成或据此确认隐秘经历。
 9. 其他角色可以被提及或在合理场景中出现，但必须保持其独立动机，不把他们当作你的分身。
 
+{INTERACTION_RULES}
+{settlement_memory(context)}
 直接续写故事正文。"""
 
 
@@ -162,13 +188,11 @@ def opening_request_context(
         if pulse_number else character.get("opening_hook") or character.get("tagline") or "在此刻相遇"
     )
     if reentry:
-        recent_messages = [
-            item for item in context.get("messages", [])
-            if item.get("content") and item.get("status") != "error"
-        ][-6:]
+        scene = context.get("previous_scene") or scene
+        recent_messages = completed_messages(context)[-6:]
         recent = "\n".join(
-            f"{'对方' if item['role'] == 'user' else character['name']}：{item['content']}"
-            for item in recent_messages
+            f"{i + 1}. {'对方' if item['role'] == 'user' else character['name']}：{item['content']}"
+            for i, item in enumerate(recent_messages)
         ) or "（此前没有留下可用的对话）"
         system = f"""你要写一段中文角色扮演的新时段接续开场。世界已经向前一步，玩家现在第一次重新进入{character['name']}在这个时段的私人现场。你不是全知旁白，也不是助手。
 
@@ -177,11 +201,14 @@ def opening_request_context(
 
 【已经成立的新时段】
 世界：{world['name']}
-此刻：{scene.get('world_time') or world.get('current_time') or '时间未定'}
+此刻：{world.get('current_time') or '时间未定'}
 公开局面：{known_events}
 地点：{character.get('location_name') or '地点未定'}
-现场余波：{scene.get('physical_state') or '没有特别变化'}；{scene.get('emotional_state') or '情绪未明'}
-未结的线：
+
+【上一场的历史快照，不是此刻】
+记录时刻：{scene.get('world_time') or '时间未记录'}（记录时间可能随世界更新，不证明旧动作持续至今）
+当时余波：{scene.get('physical_state') or '没有特别变化'}；{scene.get('emotional_state') or '情绪未明'}
+当时未结线索（可能已过时，以最近回应和现有承诺为准）：
 {_lines(scene.get('active_threads') or [], '尚无')}
 
 【{character['name']}在这个时段】
@@ -196,7 +223,7 @@ def opening_request_context(
 【对方此刻来到面前时】
 {_player_lines(context)}
 
-【上一次私人现场的结尾】
+【历史对话摘录，仅供回忆；不是本次玩家发言】
 {recent}
 
 【这个角色已经知道的事】
@@ -209,15 +236,17 @@ def opening_request_context(
 3. 只承接上面已经成立的状态。若角色没有参与上一时段、也没有获得相关事实，不得强行让他知道或卷入；没有新牵引时，就从他自己的生活与原有余波继续。
 4. 不创造新的公共事件、秘密、任务或已经完成的动作；这一段只负责把玩家带进现场，不触发事实裁判。
 5. 台词可以自然用“我”；引号外的动作、神态、感官与环境反应必须使用贴近{character['name']}的第三人称限知叙述，不写第一人称动作旁白，不使用括号或星号标动作。
-6. 不复述整段旧对话，用少量可感知细节说明时间确实向前了；结尾把下一步回应留给对方。
+6. 这是新的独立入场，不是接着历史最后一句回答。以“已经成立的新时段”的此刻为唯一时间锚点；旧现场时间只标记回忆，不能覆盖现在。历史中的“今晚、明天、刚才”属于原时段，不能照搬为当前约定。
+7. 保留关系发展，但不要重演上一场的动作、问答或索求肯定。对方已经回答过的问题不能换种说法再问；已经完成的选择不退回犹豫之前。尚未解决的事可以留下余波，不必每次入场重新讲一遍。没有新牵引时允许简短、安静的相遇，不为了新鲜编造离场期间的经历。
+8. 当前承诺列表只表示仍有效的约定，点击入场不代表已兑现；历史承诺不能自动变成新约定。角色曾提出的邀请若没有玩家明确答应，就不能说“说好了你会来”；曾计划采花、送信或带话，也不能因时间流逝写成已经做完。结尾给对方新的回应空间。
 
 直接输出故事正文。"""
         return RequestContext(
             thinking=False,
-            system=system,
+            system=system + "\n" + INTERACTION_RULES + settlement_memory(context, recent_messages),
             messages=[ContextMessage(
                 role="user",
-                content="[无声重新入场：我来到你在这个时段能察觉的位置。请从新的此刻接上故事。]",
+                content=f"[新时段独立入场。现在是{world.get('current_time') or '时间未定'}。历史仅供回忆，不继续回答旧台词、不重演旧动作。请呈现此刻的相遇。]",
             )],
             max_tokens=int(profile.get("max_tokens") or 16384),
             temperature=float(
@@ -229,7 +258,7 @@ def opening_request_context(
 
 【已成立的世界局面】
 世界：{world['name']}
-此刻：{scene.get('world_time') or world.get('current_time') or '时间未定'}
+此刻：{world.get('current_time') or '时间未定'}
 公开开场：{opening_situation}
 氛围：{world.get('atmosphere') or '未定'}
 规则：{world.get('rules') or '无额外规则'}
@@ -267,7 +296,7 @@ def opening_request_context(
 直接输出故事正文。"""
     return RequestContext(
         thinking=False,
-        system=system,
+        system=system + "\n" + INTERACTION_RULES + settlement_memory(context),
         messages=[ContextMessage(
             role="user",
             content="[无声入场：我已经来到你能察觉的位置。请从这一刻开始。]",
@@ -287,19 +316,11 @@ def scene_entry_grounding_context(
     character = context["character"]
     relationships = context.get("relationships") or []
     user_relationship = next((item for item in relationships if item.get("to_user")), {})
-    recent_messages = [
-        {
-            "role": item.get("role"),
-            "content": item.get("content"),
-        }
-        for item in context.get("messages") or []
-        if item.get("content") and item.get("status") != "error"
-    ][-6:]
+    recent_messages = dialogue_memory(completed_messages(context)[-6:])
     ledger = {
         "world": {
             "name": context["world"].get("name"),
-            "current_time": context["scene"].get("world_time")
-            or context["world"].get("current_time"),
+            "current_time": context["world"].get("current_time"),
             "atmosphere": context["world"].get("atmosphere"),
             "rules": context["world"].get("rules"),
         },
@@ -312,12 +333,13 @@ def scene_entry_grounding_context(
             "location": character.get("location_name"),
             "location_description": character.get("location_description"),
         },
-        "scene": {
-            key: context["scene"].get(key)
+        "previous_scene": {
+            key: (context.get("previous_scene") or context["scene"]).get(key)
             for key in (
-                "physical_state", "emotional_state", "tension", "active_threads"
+                "world_time", "physical_state", "emotional_state", "tension", "active_threads"
             )
         },
+        "player_profile": context.get("player_profile", {}),
         "relationship_with_player": {
             key: user_relationship.get(key)
             for key in ("label", "trust", "desire", "tension", "notes")
@@ -344,7 +366,7 @@ def scene_entry_grounding_context(
             }
             for item in context.get("knowledge") or []
         ],
-        "recent_dialogue": recent_messages,
+        "historical_dialogue": recent_messages,
     }
     if not (context.get("pulse") or {}).get("number"):
         ledger["initial_situation"] = {
@@ -359,12 +381,14 @@ def scene_entry_grounding_context(
 校对规则：
 1. 草稿中的每个硬状态或因果断言，都必须能在账本字段中找到来源。包括伤痕由谁造成、脚印或苔藓证明玩家去过哪里、信件、报纸、钥匙等承担剧情作用的物品、他人到访、调查结果、发现的线索、已完成的关键行动和玩家走过的路线。
 2. intention、active_threads 只是意图或牵引，不代表事情已经发生；intention 可以作为角色此刻声明的计划，但不得把它改写为已经完成的动作。输入没有提供世界脉搏 prose 或 encounter_hook，因为它们都不是事实凭证，不得从草稿本身反推其内容成立。
-3. 角色只能知道 public_facts_known_by_character、private_facts_or_beliefs 与 recent_dialogue 中明确存在的内容。belief 仍只是角色相信的版本。
+3. 角色只能知道 public_facts_known_by_character、private_facts_or_beliefs 与 historical_dialogue 中明确存在的内容。belief 仍只是角色相信的版本。historical_dialogue 中 settlement_outcome=rejected 的正文只能用于理解交谈，不能证明其行动结果、承诺、转场或外界情报已经成立；当前已确认字段优先，不得借校对重新确认旧主张。
 4. 可以自由保留或补足软连续性：光线、普通风声、温度、固定陈设，以及不承担证据作用的身体痕迹、衣物、气味、姿态和距离。这些细节可以自然变化，但不能被写成某段未知历史的证明；可被拿取、阅读或携带且推动剧情的道具仍必须有字段来源。
 5. 若草稿有无来源内容，删除它或改写为不作事实断言的中性细节，同时尽量保留原有文风、长度、动作和台词结构。不要借校对机会增加新情节。
-6. 玩家点击进入只表示玩家来到角色可感知范围；除 player 与 recent_dialogue 明示内容外，不替玩家补动作、感受、来意或身体状态。
+6. 玩家点击进入只表示玩家来到角色可感知范围；除 player 与 historical_dialogue 明示内容外，不替玩家补动作、感受、来意或身体状态。
 7. 特别检查“昨晚替伤者缝针”“已完成调查”“站了一夜”“来自某码头的木屑/气味”等历史行动与来源推断；普通潮湿和衣着不能证明经历或时长。没有明确账本来源就整句删除，不得换一种肯定语气留下。使用角色给定称谓，不改写性别。
-8. text 必须是可直接保存的完整正文，不能包含校对说明；无法可靠校对时返回空 text，禁止原样放行。"""
+8. world.current_time 是唯一当前入场时间。previous_scene 与 historical_dialogue 全是旧时段参考，不证明角色仍在做同一个动作；旧的“今晚、明天、刚才”不自动移植到现在。修正与当前时间不符的时刻、光线和约定说法。不得把旧台词当本次新发言再次回答，已经获得的回答和已完成的选择不能退回重新索要肯定。用当前关系与有效行动状态呈现新的相遇，不为避免重复编造离场经历。玩家历史动作也不能在本次入场重新发生。
+9. 逐句检查角色台词中的自述，台词也不是事实豁免区。历史里仅有“我想、打算、陪我去吗、我让某人说一声”，不能支持现在说“已经去了、摘好了、带过话”。“说好了、你答应过、等你来”必须有玩家明确答应且仍有效的约定；只有角色邀请或猜测就删除这类指责。不能为保留文风、动作或台词结构而留下错误前提，必要时整段改成中性相遇。
+10. text 必须是可直接保存的完整正文，不能包含校对说明；无法可靠校对时返回空 text，禁止原样放行。"""
     return RequestContext(
         thinking=True, reasoning_effort="low",
         system=system,
@@ -403,7 +427,7 @@ def parse_scene_entry_grounding(text: str) -> dict[str, Any]:
 
 
 def request_context(context: dict[str, Any], profile: dict[str, Any], *, continuation: bool = False) -> RequestContext:
-    messages = [ContextMessage(role=item["role"], content=item["content"]) for item in context["messages"] if item["status"] != "error" and item["content"]]
+    messages = [ContextMessage(role=item["role"], content=item['content']) for item in completed_messages(context)]
     if continuation:
         messages.append(ContextMessage(
             role="user",
@@ -411,7 +435,7 @@ def request_context(context: dict[str, Any], profile: dict[str, Any], *, continu
         ))
     return RequestContext(
         thinking=False,
-        system=roleplay_system(context), messages=messages,
+        system=roleplay_system(context) + plan_instructions(context) + '\n当前可知地点：' + json.dumps([location_view(p) for p in context['locations']], ensure_ascii=False), messages=messages,
         max_tokens=int(profile.get("max_tokens") or 16384),
         temperature=float(profile.get("temperature") if profile.get("temperature") is not None else 0.95),
     )
@@ -466,11 +490,15 @@ def room_turn_system(context: dict[str, Any]) -> str:
 【只有你真正知道或相信的事】
 {private_knowledge}
 
+{INTERACTION_RULES}
+{settlement_memory(context)}
 【房间规则】
 1. 你只对玩家刚说的那句话或此刻的现场做出反应，只对玩家说话；不得接续、转述、评论或回应其他角色的发言，绝不与其他角色对话循环，也不替他们说话。
 2. 你可以选择沉默：无话可说、不关你的事、或不想在旁人面前开口，就沉默。沉默同样是角色的选择。
 3. 回应时只能写你自己的话与自己可见的动作神态。台词可以自然用“我”；引号外的动作与神态必须以“{character['name']}”或“他/她”作主语，使用第三人称限知叙述，不写第一人称动作旁白，不使用括号或星号标动作。即使房间历史中出现过第一人称动作旁白，也不要模仿。
 4. 语气贴合你的说话方式：克制时短促，动情时也可以绵长；注意这里可能有人在看。
+5. 以下历史是你实际听见或看见的片段，片段之间省略的内容不是你已知的信息。本轮玩家输入若为空，不要拿上一轮输入当成新问话；可以对当前可见现场反应或沉默。
+6. 转场只写你与玩家自己的行动，不替其他成员决定同行；其他人保留原来的现场。
 
 输出必须是单个 JSON 对象，不要任何其他文字或代码块标记：
 - 若开口：{{"reply": "{character['name']}垂下眼：‘我在听。’"}}
@@ -479,13 +507,13 @@ def room_turn_system(context: dict[str, Any]) -> str:
 
 def room_turn_request_context(context: dict[str, Any], profile: dict[str, Any]) -> RequestContext:
     transcript = "\n".join(
-        f"{'玩家' if m['role'] == 'user' else (m.get('character_name') or '在场的人')}：{m['content']}"
-        for m in context["messages"] if m.get("content")
+        f"{i + 1}. {'玩家' if m['role'] == 'user' else (m.get('character_name') or '在场的人')}：{m['content']}"
+        for i, m in enumerate(completed_messages(context))
     ) or "（房间里还没有别的对话）"
     return RequestContext(
         thinking=False,
-        system=room_turn_system(context),
-        messages=[ContextMessage(role="user", content=f"房间里刚刚发生的对话：\n{transcript}\n\n此刻轮到你决定是否回应玩家。")],
+        system=room_turn_system(context) + plan_instructions(context),
+        messages=[ContextMessage(role="user", content=f"房间里你实际见闻的记录：\n{transcript}\n\n本轮你听见的玩家输入：{turn_user_text(context) or '（没有听见新的发言）'}\n此刻轮到你决定是否回应玩家。")],
         max_tokens=min(int(profile.get("max_tokens") or 16384), 400),
         temperature=float(profile.get("temperature") if profile.get("temperature") is not None else 0.95),
     )
@@ -510,9 +538,9 @@ def parse_room_reply(text: str) -> dict[str, Any]:
             raise ValueError("room_reply_invalid") from error
     if not isinstance(value, dict):
         raise ValueError("room_reply_not_object")
-    if value.get("silent"):
+    if value == {"silent": True}:
         return {"silent": True}
-    reply = str(value.get("reply") or "").strip()
-    if not reply:
-        return {"silent": True}
-    return {"reply": reply}
+    reply = value.get("reply")
+    if set(value) != {"reply"} or not isinstance(reply, str) or not reply.strip():
+        raise ValueError("room_reply_invalid")
+    return {"reply": reply.strip()}

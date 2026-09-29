@@ -1,0 +1,18 @@
+[Unit]
+Description=Gongjie shared world
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+Environment=GONGJIE_ACCESS_FILE=/opt/gongjie/app/data/access.json
+WorkingDirectory=/opt/gongjie/app
+ExecStart=/opt/gongjie/venv/bin/uvicorn gongjie.app:app --host 127.0.0.1 --port 8768 --root-path /gongjie
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

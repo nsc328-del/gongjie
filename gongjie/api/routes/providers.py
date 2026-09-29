@@ -30,7 +30,7 @@ async def test_provider() -> dict:
             RequestContext(
                 system="只回复：连接成功",
                 messages=[ContextMessage(role="user", content="测试")],
-                max_tokens=512,
+                max_tokens=512, thinking=False,
                 temperature=0,
             ),
             profile,

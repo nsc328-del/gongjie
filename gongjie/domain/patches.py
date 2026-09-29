@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from gongjie.domain.transcripts import turn_user_text
+
 
 class PatchValidationError(ValueError):
     def __init__(self, reason: str, issues: list[str] | None = None):
@@ -27,19 +29,22 @@ def validate_patch(
     result = deepcopy(patch)
     evidence = result.get("evidence", {})
     require(isinstance(evidence, dict), "evidence_invalid")
-    latest_user = next((m["content"] for m in reversed(context.get("messages", []))
-                        if m["role"] == "user"), "")
+    latest_user = turn_user_text(context)
     sources = {"user": latest_user, "assistant": reply}
     required_evidence: set[str] = set()
 
     def citation(value: Any, kinds: set[str], player_only: bool = False) -> None:
         require(isinstance(value, dict), "evidence_missing")
-        require(value.get("kind") in kinds, "evidence_not_completed")
+        require(isinstance(value.get("kind"), str) and value["kind"] in kinds, "evidence_not_completed")
         role, quote = value.get("role"), value.get("quote")
-        require(role in sources and (not player_only or role == "user"), "evidence_speaker")
+        require(isinstance(role, str) and role in sources and (not player_only or role == "user"), "evidence_speaker")
         require(isinstance(quote, str) and bool(quote.strip()) and quote in sources[role], "evidence_quote")
 
     def proof(path: str, kinds: set[str] = {"occurred", "expressed"}, player_only: bool = False) -> None:
+        if path not in evidence:
+            raise PatchValidationError('evidence_missing', [
+                f'{path} 提议了硬状态变化，但缺少 evidence["{path}"]。请选择本轮支持该变化的 source_id 和 kind；若原文不支持则删除该变化。'
+            ])
         citation(evidence.get(path), kinds, player_only)
         required_evidence.add(path)
 
@@ -94,7 +99,8 @@ def validate_patch(
         require(isinstance(event, dict), "event_invalid")
         require(set(event) <= {"title", "details", "visibility", "participants", "witnesses", "beliefs", "world_time", "knowledge_sources"}, "event_fields")
         require(all(isinstance(event.get(k), str) and bool(event[k].strip()) for k in ("title", "details")), "event_empty")
-        require(event.get("visibility") in {"public", "private", "secret"}, "event_visibility")
+        require(isinstance(event.get("visibility"), str) and event["visibility"] in {"public", "private", "secret"}, "event_visibility")
+        require(isinstance(event.get("world_time", ""), str), "event_time_text")
         proof("event", {"occurred"})
         eligible = {c["name"] for c in context.get("room_characters", [context["character"]])}
         names = set()
@@ -106,13 +112,47 @@ def validate_patch(
         names.add(context["character"]["name"])
         knowledge = event.get("knowledge_sources")
         require(isinstance(knowledge, dict) and set(knowledge) == names, "knowledge_sources_mismatch")
-        for source in knowledge.values():
+        by_name = {c['name']:c['id'] for c in context.get('room_characters', [context['character']])}
+        for name, source in knowledge.items():
             citation(source, {"witnessed", "told"})
+            if context.get('room'):
+                visible = context.get('observation_sources',{}).get(by_name[name],{}).get(source['role'],'')
+                require(source['quote'] in visible, 'knowledge_source_not_observed')
         beliefs = event.setdefault("beliefs", {})
         require(isinstance(beliefs, dict) and set(beliefs) <= names and all(isinstance(v, str) for v in beliefs.values()), "beliefs_invalid")
         if event.get("world_time"):
-            require(event["world_time"] == (result["scene"].get("world_time") or scene.get("world_time") or context["world"]["current_time"]), "event_time_mismatch")
+            expected_time = result["scene"].get("world_time") or scene.get("world_time") or context["world"]["current_time"]
+            if event["world_time"] != expected_time:
+                raise PatchValidationError("event_time_mismatch", [
+                    f"event.world_time 当前为 {event['world_time']!r}，本轮有效现场时间为 {expected_time!r}；请将 event.world_time 留空以继承现场时间，或填写与现场完全相同的值。"
+                ])
         # Every declared participant gets knowledge, but only after source validation.
         event["witnesses"] = sorted(names)
+    # A model sometimes repeats the input snapshot. Those values are not new
+    # actions and must not rewind state when an earlier queued reply commits.
+    for section, current in (('scene',scene),('player',player)):
+        value = result[section]
+        proposed_location = value.get('location_id') or next((pid for pid,name in location_ids.items() if name==value.get('location')), None)
+        if proposed_location == current.get('location_id'):
+            value.pop('location_id',None)
+            value.pop('location',None)
+    if result['scene'].get('world_time') == (scene.get('world_time') or context['world']['current_time']):
+        result['scene'].pop('world_time',None)
+    for key in ('tension', 'active_threads', 'physical_state', 'emotional_state'):
+        if key in result['scene'] and result['scene'][key] == scene.get(key):
+            result['scene'].pop(key)
+    for key in ('trust_delta', 'desire_delta', 'tension_delta'):
+        if rel.get(key) == 0:
+            rel.pop(key)
+    for key, baseline in (('label', 'label'), ('note', 'notes')):
+        if key in rel and rel[key] == relationship.get(baseline):
+            rel.pop(key)
+    for key in ('condition','visible_traces'):
+        if key in result['player'] and result['player'][key] == player.get(key):
+            result['player'].pop(key)
+    if result['player'].get('commitments') == [p['text'] for p in player.get('commitments', [])]:
+        result['player'].pop('commitments', None)
+    from gongjie.domain.locations import validate_planned_locations
+    validate_planned_locations(result, context, reply)
     result["evidence"] = {path: evidence[path] for path in sorted(required_evidence)}
     return result
